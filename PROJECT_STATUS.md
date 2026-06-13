@@ -1,32 +1,49 @@
-﻿# Desmond - Project Status
+# Desmond - Project Status
 
 > **Repository:** `github.com/christreadaway/desmond`
 > **Category:** Infrastructure
 > **Local Path:** `~/desmond/`
 
-## Overall Progress: TBD%
+## Overall Progress: ~85%
+
+v1 shipped (cross-platform message exporters). Now adding a friendlier,
+privacy-first interface layer on top.
 
 ## What's Working
-- (To be filled by Claude Code at end of next session)
+- **iMessage exporter** (`imessage_exporter.py`) — full + incremental exports to
+  JSON/CSV/markdown, contact name lookup, reactions, attachments, effects.
+- **Windows (iPhone backup)** and **Android (SMS XML)** exporters.
+- **Web setup guide** (`index.html`) — decision tree by device.
+- **NEW: Browser message picker** (`imessage_picker.py` + `desmond_picker.sh`) —
+  pick one or more people, choose a time range, preview, trim, then export.
+  Privacy controls: preview-before-save with per-message deselect, redaction
+  (phones/emails/addresses/IDs), content-type + direction filters, most-recent-N
+  cap, keyword include/exclude. Local-only server, nothing uploaded.
 
 ## What's Broken
-- (To be filled by Claude Code at end of next session)
+- Nothing known broken.
 
 ## What's In Progress
-- (To be filled by Claude Code at end of next session)
+- **Picker needs a real-Mac smoke test** — code compiles and core logic is
+  unit-tested, but it has not yet run against an actual `~/Library/Messages/chat.db`
+  (no Messages DB available in the build container).
 
 ## Tech Stack
-- (See CLAUDE.md for details)
+- Python 3 (stdlib only — sqlite3, http.server). No external dependencies.
+- See CLAUDE.md for details.
 
 ## Next Steps
-1. (To be filled by Claude Code at end of next session)
-2.
-3.
+1. Run `cd ~/desmond && git pull && python3 imessage_picker.py` on the Mac and
+   verify people list, preview, redaction, and export end-to-end.
+2. Merge `claude/kind-turing-t9kcaa` → `main` on github.com.
+3. Consider follow-on privacy features: anonymize names, view-only mode,
+   group-chat guard, per-export "what's included" receipt.
 
 ## Blockers
-- None identified yet
+- Final verification requires Chris's Mac (build container has no Messages DB).
 
 ## Last Session
-- **Date:** Not yet tracked
-- **Branch:** main
-- **Summary:** PROJECT_STATUS.md initialized. Will be auto-updated at end of each Claude Code session.
+- **Date:** 2026-06-13
+- **Branch:** `claude/kind-turing-t9kcaa` (to be merged to main on GitHub by Chris)
+- **Summary:** Built the browser-based message picker and added preview-before-save,
+  redaction, content/direction/keyword/cap filters, and multi-person selection.

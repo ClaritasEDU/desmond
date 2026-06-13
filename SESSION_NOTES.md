@@ -1,11 +1,74 @@
 # DESMOND - Session History
 
 **Repository:** `desmond`  
-**Total Sessions Logged:** 4  
-**Date Range:** 2025-01-25 to 2025-02-03  
-**Last Updated:** 2026-02-16 at 14:48 UTC
+**Total Sessions Logged:** 5  
+**Date Range:** 2025-01-25 to 2026-06-13  
+**Last Updated:** 2026-06-13 at 02:58 UTC
 
 This file contains a complete history of Claude Code sessions for this repository, automatically generated from transcript files. Sessions are listed in reverse chronological order (most recent first).
+
+---
+
+## 2026-06-13 — Browser-based Message Picker
+
+### What We Built
+A new clickable, privacy-first interface for exporting iMessages: pick one or
+more people, choose a time range, **preview exactly what would be exported**,
+trim it down, then save. Built on top of the existing `imessage_exporter.py`
+(reuses its contact lookup + timestamp logic).
+
+New files:
+- `imessage_picker.py` — local-only web server + single-page UI
+- `desmond_picker.sh` — double-click launcher (`python3 imessage_picker.py`)
+
+### Technical Details
+- Runs a stdlib `ThreadingHTTPServer` on `127.0.0.1:8765`, opens the browser
+  automatically. No external dependencies (Python 3 only). Nothing is uploaded.
+- Reads `~/Library/Messages/chat.db` **read-only** (`mode=ro` URI).
+- Flow: `GET /api/people` → `POST /api/preview` → `POST /api/export`.
+- Output goes to `~/Downloads/iMessages_Export/_picks/<label>_<range>_<stamp>/`
+  as `conversation.md`, `messages.json`, `messages.csv`; folder opens in Finder.
+- Privacy/scoping features implemented this session:
+  1. **Preview-before-save** — nothing written until approved; per-message deselect.
+  2. **Redaction toggle** — scrubs phones, emails, addresses, SSNs, long numbers
+     from the *export only* (DB untouched). Regex-based, unit-tested.
+  3. **Content + direction filters** — text/attachments/reactions, me/them/both.
+  4. **Most-recent-N cap**.
+  5. **Keyword include/exclude**.
+  - **Multi-person selection** — searchable checkbox list; export groups by person.
+
+### Current Status
+- ✅ Code compiles; redaction + date-range logic unit-tested in container.
+- ✅ Committed and pushed to `claude/kind-turing-t9kcaa`.
+- 🚧 NOT yet run against a real `chat.db` — no Messages DB in the Linux build
+  container. First real-world run must happen on Chris's Mac.
+- ❌ Not merged to `main`.
+
+### Branch Info
+- Branch: `claude/kind-turing-t9kcaa` (session branch assigned by the harness;
+  note this differs from the CLAUDE.md "work on main" rule — left on the feature
+  branch and awaiting an explicit merge-to-main request).
+- Commits: picker added, then upgraded with features 1–5 + multi-person.
+
+### Decisions Made
+- Built the interface as a local browser app (matches the existing `index.html`
+  setup-guide pattern) rather than a Tkinter GUI — more robust on macOS system
+  Python, zero dependencies.
+- Reused `imessage_exporter.py` helpers instead of duplicating the gnarly
+  contact/timestamp code (single source of truth).
+- Fable 5 was requested for a product review but was unavailable; the feature
+  analysis and implementation were done by the session model.
+
+### Next Steps
+1. Run `python3 imessage_picker.py` on the Mac and confirm people-list,
+   preview, redaction, and export all work against the real database.
+2. Merge `claude/kind-turing-t9kcaa` → `main` once verified.
+3. Optional follow-on features discussed: anonymize names, view-only/no-write
+   mode, group-chat guard, "what's in this export" receipt.
+
+### Questions/Blockers
+- Confirm whether the picker should eventually replace or sit alongside the
+  full `imessage_exporter.py --full` flow.
 
 ---
 
