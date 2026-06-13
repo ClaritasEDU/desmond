@@ -78,6 +78,31 @@ PHONE_RE = re.compile(r"\(?\+?\d[\d\-\.\s\(\)]{7,}\d")
 LONGNUM_RE = re.compile(r"\b\d{9,}\b")
 
 
+def decode_attributed_body(data):
+    """Extract message text from Apple's binary `attributedBody` field.
+
+    Modern macOS frequently leaves `message.text` NULL and stores the actual
+    text in `attributedBody` (an NSAttributedString typedstream). Without this,
+    many sent messages and link/formatted messages get dropped entirely.
+    """
+    if not data:
+        return None
+    try:
+        if isinstance(data, str):
+            return data or None
+        chunk = data.split(b"NSString")[1][5:]  # skip class metadata bytes
+        if chunk[0] == 0x81:  # 2-byte little-endian length follows
+            length = int.from_bytes(chunk[1:3], "little")
+            chunk = chunk[3:]
+        else:
+            length = chunk[0]
+            chunk = chunk[1:]
+        text = chunk[:length].decode("utf-8", errors="ignore").strip()
+        return text or None
+    except Exception:
+        return None
+
+
 def redact_text(text):
     if not text:
         return text
@@ -154,7 +179,8 @@ def iter_messages(cursor, since_apple=None, until_apple=None):
     cursor.execute(f"""
         SELECT message.ROWID, message.text, message.date, message.is_from_me,
                message.handle_id, message.associated_message_type,
-               message.balloon_bundle_id, chat.chat_identifier, chat.display_name
+               message.balloon_bundle_id, chat.chat_identifier, chat.display_name,
+               message.attributedBody
         FROM message
         LEFT JOIN chat_message_join ON message.ROWID = chat_message_join.message_id
         LEFT JOIN chat ON chat_message_join.chat_id = chat.ROWID
@@ -190,7 +216,7 @@ def list_people():
     cursor = conn.cursor()
     meta = {}
     for row in iter_messages(cursor):
-        _, _, date, _, handle_id, _, _, chat_id, display_name = row
+        _, _, date, _, handle_id, _, _, chat_id, display_name, _ = row
         dt = core.convert_apple_time(date)
         if dt is None:
             continue
@@ -211,10 +237,14 @@ def list_people():
 # Gathering (applies Features 2-5 + multi-person + direction)
 # ---------------------------------------------------------------------------
 def make_record(row, att, cursor, person, want_text, want_att, want_react):
-    rowid, text, date, is_from_me, handle_id, assoc, balloon, chat_id, display_name = row
+    rowid, text, date, is_from_me, handle_id, assoc, balloon, chat_id, display_name, attributed = row
     dt = core.convert_apple_time(date)
     if dt is None:
         return None
+
+    # Recover text that Apple stashed in attributedBody instead of message.text
+    if not text:
+        text = decode_attributed_body(attributed)
 
     sender = "Me" if is_from_me else (
         core.get_contact_name(handle_id, cursor) if handle_id else "Unknown")
@@ -278,7 +308,7 @@ def gather(f):
 
     out = []
     for row in iter_messages(cursor, since, until):
-        _, _, _, is_from_me, handle_id, _, _, chat_id, display_name = row
+        _, _, _, is_from_me, handle_id, _, _, chat_id, display_name, _ = row
         name, _ = conversation_name(handle_id, chat_id, display_name, cursor)
         name = str(name)
         if people and name not in people:
