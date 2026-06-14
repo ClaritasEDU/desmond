@@ -9,6 +9,53 @@ This file contains a complete history of Claude Code sessions for this repositor
 
 ---
 
+## 2026-06-14 — Branch divergence fix + shareable run logs
+
+### What We Did
+1. **Fixed the branch** ("1 ahead, 1 behind"): PR #3 had merged this branch into
+   `main` (through `aeb2561`); our newest commit then sat on top, and `main`'s
+   merge commit wasn't on the branch. Rebased our one extra commit onto the
+   updated `origin/main` and force-pushed (`--force-with-lease`). Now **0 behind /
+   1 ahead**, local == remote.
+2. **Added run logging** the user can share to refine the product.
+
+### Technical Details
+- New `desmond_log.py` — `RunLogger` writes a `.log` (human) + `.json` (structured)
+  to `~/Downloads/Desmond_Logs/`. Captures environment (python/platform), CLI args,
+  per-phase timings, metrics (conversations/messages/attachments/offloaded, verify
+  counts), and full tracebacks on error. **PII-safe:** `sanitize()` redacts the
+  home path → `~`, `GoogleDrive-<account>`, and email addresses; logs never include
+  message text or contact names.
+- Wired into `desmond_export.py`: `main()` opens a logger, logs args, runs
+  build→mirror→verify (each a logged phase/metric via `run_once(logger=...)`),
+  records fatal errors, and prints the log path at the end. Logging failures never
+  break the export (guarded).
+- Verified end-to-end: ran the one command against a synthetic DB → archive +
+  verify + a clean JSON log with metrics and zero errors.
+
+### Current Status
+- ✅ Branch corrected and pushed. ✅ All five suites pass — archiver 29, picker 24,
+  exporter 7, unified 19, log 10 → **89 total**.
+- ✅ Committed/pushed to `claude/nifty-cori-60alcq` (1 ahead of main, clean).
+- 🚧 Real Mac/Drive/browser run still pending.
+
+### Decisions Made
+- Rebase (not merge) the single extra commit → clean "1 ahead, 0 behind" for the
+  next PR; `--force-with-lease` since local == remote and no open PR.
+- Logs live in `~/Downloads/Desmond_Logs/` (outside the archive, accumulate across
+  runs, easy to find/share) and are PII-safe by construction.
+
+### Next Steps
+1. On the Mac: run `python3 desmond_export.py`, then send me the newest
+   `~/Downloads/Desmond_Logs/desmond_export_*.json` to refine behavior.
+2. (Optional) open a PR for the remaining commit when ready.
+
+### Questions/Blockers
+- None new.
+
+---
+
+
 ## 2026-06-14 — One thing to run + pagination (100/page)
 
 ### What We Built

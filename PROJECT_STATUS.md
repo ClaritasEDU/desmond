@@ -19,8 +19,9 @@ Google Drive-ready.
   Saved **locally + mirrored to Google Drive**, then **three-way verified** with a
   report. Flags: `--photos-videos`, `--newest`, `--no-drive`, `--drive`, `--retry`.
   Transcripts and the conversation list **paginate (100/page)** so huge histories
-  open instantly. It's the headline path (web guide + README lead with it);
-  orchestrates the building blocks below.
+  open instantly. Writes a **PII-safe run log** to `~/Downloads/Desmond_Logs/`
+  (counts/env/errors, shareable). It's the headline path (web guide + README lead
+  with it); orchestrates the building blocks below.
 - **iMessage exporter** (`imessage_exporter.py`) — full + incremental text exports
   to JSON/CSV/markdown, contact name lookup, reactions, attachments (as labels),
   effects. **NEW:** saves locally **and** copies to Google Drive
@@ -92,5 +93,7 @@ Google Drive-ready.
   local + Drive + verify treatment, then unified it all into **`desmond_export.py`**
   — one command for the whole archive (text + media inline, local + Drive,
   verified). Made it the single headline path (web guide + README) and added
-  **pagination (100/page)** so huge histories don't crash the browser. Four test
-  suites (76 checks total, all passing); docs updated.
+  **pagination (100/page)** so huge histories don't crash the browser, plus
+  **PII-safe run logs** (`desmond_log.py`) the user can share. Also fixed a branch
+  divergence (rebased onto merged main). Five test suites (89 checks total, all
+  passing); docs updated.

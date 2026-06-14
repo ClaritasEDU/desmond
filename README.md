@@ -55,6 +55,11 @@ Each transcript shows **100 messages at a time** ("Show next 100" / "Show all")
 and the conversation list pages the same way, so even a huge history opens
 instantly instead of crashing the browser.
 
+Every run also writes a **shareable log** to `~/Downloads/Desmond_Logs/` (a
+`.log` and a `.json` with counts, timings, environment, and any errors — **no
+message text or contact names**, and home path/Google Drive account/email are
+redacted). Send me that `.json` to help refine how it works.
+
 > *Why an `index.html` plus per-conversation files instead of one giant file?* A
 > full history can be hundreds of thousands of messages — too large for any browser
 > to open as a single page. One entry point that links to per-conversation
@@ -549,6 +554,7 @@ The script will automatically search common folders (Downloads, Documents, Deskt
 |------|---------|
 | `desmond_export.py` | **One-shot full export** — text + media inline, local + Drive, verified |
 | `desmond_export.sh` | Easy launcher for the one-shot full export |
+| `desmond_log.py` | Writes the PII-safe run log to `~/Downloads/Desmond_Logs/` |
 | `desmond.sh` | Automates iCloud Messages sync |
 | `imessage_exporter.py` | Exports message text from Mac |
 | `imessage_attachments.py` | Archives the actual photos/videos/files (Google Drive-ready); `--verify` checks completeness |

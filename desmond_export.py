@@ -37,6 +37,7 @@ from urllib.parse import quote
 
 import imessage_picker as pick
 import imessage_attachments as attach
+import desmond_log as dlog
 
 ARCHIVE_NAME = "Desmond_Message_Archive"
 
@@ -203,16 +204,23 @@ def build_archive(db_path, output_dir, order="oldest", photos_videos=False, verb
 
 
 def run_once(db_path, output_dir, order, photos_videos, expect_drive, drive_override,
-             do_verify=True):
-    build_archive(db_path, output_dir, order=order, photos_videos=photos_videos)
+             do_verify=True, logger=None):
+    stats = build_archive(db_path, output_dir, order=order, photos_videos=photos_videos)
+    if logger:
+        logger.metric(conversations=stats["conversations"], messages=stats["messages"],
+                      attachments=stats["attachments"], offloaded=stats["offloaded"])
 
     drive_folder = None
     if expect_drive:
         base = drive_override or attach.find_google_drive_dir()
+        if logger:
+            logger.log("info", "google drive detection", drive_detected=bool(base))
         if base:
             drive_folder = os.path.join(base, ARCHIVE_NAME)
             print(f"\nMirroring to Google Drive: {drive_folder}")
-            attach.mirror_tree(output_dir, drive_folder)
+            n = attach.mirror_tree(output_dir, drive_folder)
+            if logger:
+                logger.metric(mirrored_files=n)
         else:
             print("\n(No Google Drive detected — saved locally only. Install Google "
                   "Drive for desktop or pass --drive PATH.)")
@@ -222,6 +230,12 @@ def run_once(db_path, output_dir, order, photos_videos, expect_drive, drive_over
     print("\nVerifying (device vs local vs Google Drive)…")
     res = attach.verify_archive(db_path=db_path, output_dir=output_dir,
                                 drive_mirror=drive_folder, expect_drive=expect_drive)
+    if logger and isinstance(res, dict):
+        logger.metric(verify_complete=res.get("complete"),
+                      in_local=res.get("in_local"), in_drive=res.get("in_drive"),
+                      verify_offloaded=res.get("offloaded"),
+                      missing_local=res.get("missing_local"),
+                      missing_drive=res.get("missing_drive"))
     # Make sure the freshly written report is on Drive too.
     if drive_folder:
         for fn in ("VERIFY_REPORT.md", "verify_diff.json", "index.html"):
@@ -267,13 +281,25 @@ def main():
     expect_drive = not args.no_drive
 
     try:
+        logger = dlog.RunLogger("desmond_export")
+        logger.log("info", "args", order=order, photos_videos=args.photos_videos,
+                   to_drive=expect_drive, dest=output_dir,
+                   drive=(drive_override or ""), retry=args.retry)
+    except Exception:
+        logger = None
+
+    status = "ok"
+    done = False
+    try:
         if args.retry is not None:
             attempts = max(1, args.retry)
             res = None
             for i in range(attempts):
                 print(f"\n===== Attempt {i + 1} of {attempts} =====")
+                if logger:
+                    logger.log("info", "attempt", n=i + 1, of=attempts)
                 res = run_once(args.db, output_dir, order, args.photos_videos,
-                               expect_drive, drive_override, do_verify=True)
+                               expect_drive, drive_override, do_verify=True, logger=logger)
                 if res and res.get("complete"):
                     print(f"\n✅ Archive complete after {i + 1} pass(es).")
                     break
@@ -283,21 +309,30 @@ def main():
             done = bool(res and res.get("complete"))
         else:
             res = run_once(args.db, output_dir, order, args.photos_videos,
-                           expect_drive, drive_override, do_verify=not args.no_verify)
+                           expect_drive, drive_override, do_verify=not args.no_verify,
+                           logger=logger)
             done = (res is None) or bool(res.get("complete"))
-
-        try:
-            subprocess.run(["open", os.path.join(output_dir, "index.html")], check=False)
-        except Exception:
-            pass
-        sys.exit(0 if done else 1)
     except Exception as e:
+        status = "error"
         print(f"Error: {e}")
         import traceback
         traceback.print_exc()
         print("\nIf this is a permissions error: give Terminal Full Disk Access "
               "(System Settings → Privacy & Security), then restart Terminal.")
-        sys.exit(1)
+        if logger:
+            logger.exception("fatal error")
+
+    if logger:
+        log_path = logger.close(status=status, output_dir=output_dir, complete=done)
+        print(f"\n📝 Run log (safe to share — counts/env/errors only, no message "
+              f"text or names): {log_path}")
+
+    if status == "ok":
+        try:
+            subprocess.run(["open", os.path.join(output_dir, "index.html")], check=False)
+        except Exception:
+            pass
+    sys.exit(0 if (done and status == "ok") else 1)
 
 
 if __name__ == "__main__":

@@ -121,6 +121,19 @@ def main():
         check(v["offloaded"] == 1, "verify reports the 1 offloaded item")
         check(os.path.exists(os.path.join(out, "VERIFY_REPORT.md")), "wrote VERIFY_REPORT.md")
 
+        # run_once with a logger writes a PII-safe run log with metrics.
+        import desmond_log as dlog
+        lg = dlog.RunLogger("test_export", log_dir=os.path.join(tmp, "logs"))
+        dx.run_once(db, out, "oldest", False, expect_drive=False, drive_override=None,
+                    do_verify=True, logger=lg)
+        jp = lg.close(status="ok")
+        check(os.path.exists(jp), "run_once writes a run log (.json)")
+        logd = json.load(open(jp))
+        check(logd["metrics"].get("conversations") == 2,
+              "run log captures the conversation count")
+        check("messages" in logd["metrics"] and "attachments" in logd["metrics"],
+              "run log captures message + attachment counts")
+
     print()
     if failures:
         print(f"{len(failures)} test(s) FAILED")
