@@ -9,6 +9,47 @@ This file contains a complete history of Claude Code sessions for this repositor
 
 ---
 
+## 2026-06-14 — One thing to run + pagination (100/page)
+
+### What We Built
+Per Chris ("one thing to run. make it happen." + "do pagination … defaulting to
+showing 100 items"): made `desmond_export.py` THE path and added pagination so
+big threads don't crash the browser.
+
+### Technical Details
+- **One command everywhere:** the web setup guide (`index.html`) macOS step 4 now
+  shows `python3 desmond_export.py` as the single command (text + media inline,
+  local + Drive, verified); README leads with a ⭐ "one command" section right
+  after Quick Start; Files Reference lists `desmond_export.py`/`.sh` first. The
+  three building-block scripts remain but are clearly secondary.
+- **Pagination (default 100):** the shared transcript renderer
+  (`pick.render_html`) now renders 100 messages per page with "Show next 100" /
+  "Show all", preserving person/day headers and the newest/oldest toggle (toggle
+  resets to page 1). The unified archive's `index.html` conversation list paginates
+  the same way (100, "Show more", search resets). This is what keeps a
+  hundreds-of-thousands-message history openable.
+
+### Current Status
+- ✅ All four suites pass — archiver 29, picker 24, exporter 7, unified 16 →
+  **76 total** (added pagination assertions). Compiles clean.
+- ✅ Committed/pushed to `claude/nifty-cori-60alcq`.
+- 🚧 Real Mac/Drive/browser run still pending.
+
+### Decisions Made
+- Paginate in the renderer (one place) so the picker and the unified exporter both
+  benefit. Flat, date-ordered pagination with inline headers handles single- and
+  multi-person transcripts.
+
+### Next Steps
+1. On the Mac: `python3 desmond_export.py`, open `index.html`, page through a big
+   thread, confirm media inline + ✅ verify in local + Drive.
+
+### Questions/Blockers
+- Real-Mac/Drive/browser run pending.
+
+---
+
+
 ## 2026-06-14 — Single unified exporter (text + media inline, one command)
 
 ### What We Built

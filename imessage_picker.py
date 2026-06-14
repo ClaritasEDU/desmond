@@ -471,13 +471,17 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <p class="sub">__SUMMARY__</p>
 <div class="bar">
   <button id="toggle">↕ Order: <b id="ord"></b></button>
+  <button id="more">Show next 100</button>
+  <button id="all">Show all</button>
   <span class="sub" id="count" style="margin:0"></span>
 </div>
 <div id="out"></div>
 </div>
 <script>
 const RECORDS = __RECORDS__;
+const PAGE_SIZE = 100;            // paginate so huge threads don't crash the browser
 let order = "__DEFAULT_ORDER__";
+let sorted = [], shown = 0, lastPerson = null, lastDay = null;
 function esc(s){return (s||"").replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));}
 function media(m){
   if(m.missing) return '<div class="miss">['+esc(m.category)+' — not downloaded from iCloud]</div>';
@@ -487,30 +491,46 @@ function media(m){
   if(m.category==="audio") return '<audio class="att" controls src="'+p+'"></audio>';
   return '<a class="file" href="'+p+'" target="_blank">📎 '+esc(m.name)+'</a>';
 }
-function render(){
-  document.getElementById("ord").textContent = (order==="newest"?"newest first":"oldest first");
-  const recs = RECORDS.slice().sort((a,b)=> a.timestamp<b.timestamp?-1:(a.timestamp>b.timestamp?1:0));
-  if(order==="newest") recs.reverse();
-  const out=document.getElementById("out"); out.innerHTML="";
-  const byPerson={}, pOrder=[];
-  recs.forEach(r=>{ if(!(r.person in byPerson)){byPerson[r.person]=[];pOrder.push(r.person);} byPerson[r.person].push(r); });
-  pOrder.forEach(person=>{
-    const h=document.createElement("div"); h.className="person"; h.textContent=person; out.appendChild(h);
-    let lastDay="";
-    byPerson[person].forEach(r=>{
-      if(r.date!==lastDay){ lastDay=r.date; const d=document.createElement("div"); d.className="day"; d.textContent=r.date; out.appendChild(d); }
-      const m=document.createElement("div");
-      m.className="m"+(r.is_from_me?" me":"")+(r.message_type==="reaction"?" react":"");
-      let html='<div class="meta">'+esc(r.time.slice(0,5))+' · <span class="who">'+esc(r.sender)+'</span></div>';
-      if(r.text_plain) html+='<div class="txt">'+esc(r.text_plain)+'</div>';
-      (r.media||[]).forEach(mm=> html+=media(mm));
-      m.innerHTML=html; out.appendChild(m);
-    });
-  });
-  document.getElementById("count").textContent = recs.length.toLocaleString()+" messages";
+function msgRow(r){
+  const m=document.createElement("div");
+  m.className="m"+(r.is_from_me?" me":"")+(r.message_type==="reaction"?" react":"");
+  let html='<div class="meta">'+esc(r.time.slice(0,5))+' · <span class="who">'+esc(r.sender)+'</span></div>';
+  if(r.text_plain) html+='<div class="txt">'+esc(r.text_plain)+'</div>';
+  (r.media||[]).forEach(mm=> html+=media(mm));
+  m.innerHTML=html; return m;
 }
-document.getElementById("toggle").onclick=()=>{ order=(order==="newest"?"oldest":"newest"); render(); };
-render();
+function appendPage(){
+  const out=document.getElementById("out");
+  const end=Math.min(shown+PAGE_SIZE, sorted.length);
+  for(let i=shown;i<end;i++){
+    const r=sorted[i];
+    if(r.person!==lastPerson){ lastPerson=r.person; lastDay=null;
+      const h=document.createElement("div"); h.className="person"; h.textContent=r.person; out.appendChild(h); }
+    if(r.date!==lastDay){ lastDay=r.date;
+      const d=document.createElement("div"); d.className="day"; d.textContent=r.date; out.appendChild(d); }
+    out.appendChild(msgRow(r));
+  }
+  shown=end; updateBar();
+}
+function updateBar(){
+  document.getElementById("ord").textContent=(order==="newest"?"newest first":"oldest first");
+  document.getElementById("count").textContent="showing "+shown.toLocaleString()+" of "+sorted.length.toLocaleString();
+  const remaining=sorted.length-shown;
+  const more=document.getElementById("more"), all=document.getElementById("all");
+  more.style.display = remaining>0 ? "" : "none";
+  all.style.display  = remaining>0 ? "" : "none";
+  if(remaining>0) more.textContent="Show next "+Math.min(PAGE_SIZE,remaining);
+}
+function reset(){
+  sorted=RECORDS.slice().sort((a,b)=> a.timestamp<b.timestamp?-1:(a.timestamp>b.timestamp?1:0));
+  if(order==="newest") sorted.reverse();
+  document.getElementById("out").innerHTML=""; shown=0; lastPerson=null; lastDay=null;
+  appendPage();
+}
+document.getElementById("toggle").onclick=()=>{ order=(order==="newest"?"oldest":"newest"); reset(); };
+document.getElementById("more").onclick=()=>appendPage();
+document.getElementById("all").onclick=()=>{ while(shown<sorted.length) appendPage(); };
+reset();
 </script></body></html>"""
 
 

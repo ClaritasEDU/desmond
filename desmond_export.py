@@ -58,29 +58,49 @@ INDEX_TEMPLATE = r"""<!DOCTYPE html>
  a.row:hover{border-color:#4f8cff;background:#161a22;}
  .nm{flex:1;font-weight:600;} .ct{color:#9aa3b2;font-size:12.5px;white-space:nowrap;text-align:right;}
  .miss{color:#d6a;}
+ button{background:#22304a;color:#fff;border:1px solid #4f8cff;border-radius:8px;padding:8px 12px;font-size:13.5px;cursor:pointer;margin:6px 0;}
 </style></head><body><div class="wrap">
 <h1>📲 Message Archive</h1>
 <p class="sub">__TOTALS__</p>
 <input id="q" placeholder="Search conversations…" autocomplete="off">
 <div id="list"></div>
+<button id="more">Show more</button>
+<p class="sub" id="count"></p>
 </div>
 <script>
 const ROWS = __ROWS__;
+const PAGE = 100;                 // default to 100 so a huge list won't choke
+let filtered = [], shown = 0;
 function esc(s){return (s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));}
-function render(q){
-  q=(q||"").toLowerCase();
-  const L=document.getElementById("list"); L.innerHTML="";
-  ROWS.filter(r=>r.name.toLowerCase().includes(q)).forEach(r=>{
-    const a=document.createElement("a"); a.className="row"; a.href=r.href;
-    const miss=r.missing?` · <span class="miss">${r.missing.toLocaleString()} offloaded</span>`:"";
-    a.innerHTML=`<span class="nm">${esc(r.name)}</span>`
-      +`<span class="ct">${r.count.toLocaleString()} msgs · ${r.attachments.toLocaleString()} media${miss}<br>${r.first} → ${r.last}</span>`;
-    L.appendChild(a);
-  });
-  if(!L.children.length) L.innerHTML='<p class="sub">No matches.</p>';
+function rowEl(r){
+  const a=document.createElement("a"); a.className="row"; a.href=r.href;
+  const miss=r.missing?` · <span class="miss">${r.missing.toLocaleString()} offloaded</span>`:"";
+  a.innerHTML=`<span class="nm">${esc(r.name)}</span>`
+    +`<span class="ct">${r.count.toLocaleString()} msgs · ${r.attachments.toLocaleString()} media${miss}<br>${r.first} → ${r.last}</span>`;
+  return a;
 }
-document.getElementById("q").oninput=e=>render(e.target.value);
-render("");
+function appendPage(){
+  const L=document.getElementById("list");
+  const end=Math.min(shown+PAGE, filtered.length);
+  for(let i=shown;i<end;i++) L.appendChild(rowEl(filtered[i]));
+  shown=end; update();
+}
+function update(){
+  const rem=filtered.length-shown, more=document.getElementById("more");
+  more.style.display = rem>0 ? "" : "none";
+  if(rem>0) more.textContent="Show next "+Math.min(PAGE,rem);
+  document.getElementById("count").textContent =
+    filtered.length ? ("showing "+shown.toLocaleString()+" of "+filtered.length.toLocaleString()+" conversations") : "";
+}
+function apply(q){
+  q=(q||"").toLowerCase();
+  filtered=ROWS.filter(r=>r.name.toLowerCase().includes(q));
+  document.getElementById("list").innerHTML=""; shown=0; appendPage();
+  if(!filtered.length){ document.getElementById("list").innerHTML='<p class="sub">No matches.</p>'; }
+}
+document.getElementById("q").oninput=e=>apply(e.target.value);
+document.getElementById("more").onclick=()=>appendPage();
+apply("");
 </script></body></html>"""
 
 

@@ -89,6 +89,8 @@ def main():
         check("<img class=\"att\"" in html, "HTML embeds the photo inline (<img>)")
         check('id="toggle"' in html and 'let order = "newest"' in html,
               "HTML has order toggle defaulting to newest")
+        check("PAGE_SIZE = 100" in html and 'id="more"' in html,
+              "transcript paginates (default 100 per page)")
         check("not downloaded from iCloud" in html, "HTML notes the missing/offloaded file")
 
         with open(os.path.join(folder, "messages.json"), encoding="utf-8") as jf:

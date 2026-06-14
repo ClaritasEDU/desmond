@@ -87,6 +87,8 @@ def main():
         index = open(os.path.join(out, "index.html"), encoding="utf-8").read()
         check("Message Archive" in index and "conversations/" in index,
               "index lists conversations with links")
+        check("const PAGE = 100" in index and 'id="more"' in index,
+              "index paginates (default 100)")
 
         convs = os.path.join(out, "conversations")
         conv_htmls = [os.path.join(r, "conversation.html")
@@ -96,6 +98,7 @@ def main():
         joined = "".join(open(h, encoding="utf-8").read() for h in conv_htmls)
         check('<img class="att"' in joined, "media shown inline in a transcript")
         check('id="toggle"' in joined, "transcripts have the date order toggle")
+        check("PAGE_SIZE = 100" in joined, "transcripts paginate (default 100)")
 
         media_files = [f for r, _d, files in os.walk(convs) for f in files
                        if "/attachments/" in os.path.join(r, f).replace(os.sep, "/")]

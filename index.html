@@ -553,20 +553,22 @@ cd desmond</code>
             <div class="step fade-in">
                 <div class="step-header">
                     <div class="step-number">4</div>
-                    <div class="step-title">Export Your Messages</div>
+                    <div class="step-title">Export Everything — one command</div>
                 </div>
                 <div class="step-content">
+                    <p>This single command exports your <strong>whole history — text and the real photos/videos</strong> — into one browsable archive, saved <strong>locally and on Google Drive</strong>, then verifies it:</p>
                     <div class="code-block">
                         <button class="copy-btn" onclick="copyCode(this)">Copy</button>
-                        <code>python3 imessage_exporter.py --full</code>
+                        <code>python3 desmond_export.py</code>
                     </div>
-                    <p>Your messages will be exported to: <code>~/Downloads/iMessages_Export/</code></p>
+                    <p>Open the <code>index.html</code> it creates, click a conversation, and read the whole thread with <strong>photos &amp; videos inline, in date order</strong>.</p>
+                    <p style="color:var(--text-muted);font-size:.95em">Options: <code>--photos-videos</code>, <code>--newest</code>, <code>--no-drive</code>, <code>--retry</code>. Saved to <code>~/Downloads/Desmond_Message_Archive/</code> (and mirrored to Google Drive).</p>
                 </div>
             </div>
 
             <div class="callout success">
-                <div class="callout-title">🎉 That's it!</div>
-                <p>Upload <code>messages.json</code> or <code>SUMMARY.md</code> to Claude for analysis.</p>
+                <div class="callout-title">🎉 That's it — one command.</div>
+                <p>Open <code>index.html</code> in the archive to browse everything. It lives in both your local folder and Google Drive, and <code>VERIFY_REPORT.md</code> confirms all attachments are in all three places (device, local, Drive).</p>
             </div>
         </div>
 

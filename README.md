@@ -51,6 +51,10 @@ Useful flags: `--photos-videos` (images/videos only), `--newest` (newest first),
 (loop until local & Drive match). It reads Messages **read-only** and never
 deletes anything; re-runs are incremental.
 
+Each transcript shows **100 messages at a time** ("Show next 100" / "Show all")
+and the conversation list pages the same way, so even a huge history opens
+instantly instead of crashing the browser.
+
 > *Why an `index.html` plus per-conversation files instead of one giant file?* A
 > full history can be hundreds of thousands of messages — too large for any browser
 > to open as a single page. One entry point that links to per-conversation
