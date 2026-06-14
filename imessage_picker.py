@@ -216,15 +216,15 @@ def iter_messages(cursor, since_apple=None, until_apple=None):
 
 
 def attachments_for(cursor):
-    """Map message_id -> list of attachment dicts (category + real file path)."""
+    """Map message_id -> list of attachment dicts (id + category + real file path)."""
     cursor.execute("""
-        SELECT message_attachment_join.message_id, attachment.mime_type,
-               attachment.filename, attachment.transfer_name
+        SELECT message_attachment_join.message_id, attachment.ROWID,
+               attachment.mime_type, attachment.filename, attachment.transfer_name
         FROM attachment
         JOIN message_attachment_join ON attachment.ROWID = message_attachment_join.attachment_id
     """)
     result = defaultdict(list)
-    for msg_id, mime_type, filename, transfer_name in cursor.fetchall():
+    for msg_id, att_id, mime_type, filename, transfer_name in cursor.fetchall():
         if mime_type and mime_type.startswith("image"):
             category = "photo"
         elif mime_type and mime_type.startswith("video"):
@@ -234,7 +234,7 @@ def attachments_for(cursor):
         else:
             category = "file"
         result[msg_id].append({
-            "category": category, "mime": mime_type,
+            "id": att_id, "category": category, "mime": mime_type,
             "filename": filename, "transfer_name": transfer_name,
         })
     return result
@@ -440,8 +440,9 @@ def copy_attachment(a, rec, folder):
             display = os.path.relpath(jpg, folder).replace(os.sep, "/")
         except Exception:
             pass
-    return {"category": category, "name": original, "missing": False,
-            "mime": (a or {}).get("mime"), "path": rel, "display": display}
+    return {"id": (a or {}).get("id"), "category": category, "name": original,
+            "missing": False, "mime": (a or {}).get("mime"),
+            "path": rel, "display": display}
 
 
 HTML_TEMPLATE = r"""<!DOCTYPE html>

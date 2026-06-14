@@ -9,6 +9,58 @@ This file contains a complete history of Claude Code sessions for this repositor
 
 ---
 
+## 2026-06-14 — Single unified exporter (text + media inline, one command)
+
+### What We Built
+Chris: "is it possible for a single exporter that gets both the text and the media
+and everything inline with the correct time date stamps? I didn't envision
+multiple files." → New **`desmond_export.py`** + `desmond_export.sh`: ONE command
+that exports the whole history into one browsable archive (open `index.html` →
+per-conversation transcript with photos/videos inline, date-ordered), saved
+**local + Google Drive**, then **verified**.
+
+### Technical Details
+- One pass over chat.db via `pick.gather({range:all, types:[text,attachments,
+  reactions]})`, grouped by conversation. Per conversation: copies real
+  attachments (`pick.copy_attachment`) and renders an inline-media transcript
+  (`pick.render_html`, newest/oldest toggle). Writes a searchable `index.html`
+  linking every conversation (busiest first).
+- Writes an archiver-format `attachments.json` (via `attach.write_manifests`) so
+  the existing **three-way verify** works as-is. Then `attach.mirror_tree` →
+  Google Drive and `attach.verify_archive(..., drive_mirror=<archive on Drive>)`.
+  `--retry` loops build→mirror→verify until complete.
+- Enabling tweaks: `pick.attachments_for`/`copy_attachment` now carry the
+  attachment ROWID (`id`) so the manifest can key by it; `attach.verify_archive`
+  gained an explicit `drive_mirror` override (the unified archive's Drive folder
+  is `Desmond_Message_Archive`, not the archiver's folder name).
+- **Scale decision:** one entry point + per-conversation pages (a single
+  multi-GB HTML can't open in a browser). Documented in the README; the picker
+  still gives a single self-contained file for one conversation.
+
+### Current Status
+- ✅ Compiles; new `test_desmond_export.py` passes (index, per-conv inline media,
+  attachment copied, manifest, mirror, three-way verify). All suites green:
+  archiver 29, picker 23, exporter 7, unified 14 → **73 total**.
+- ✅ Committed/pushed to `claude/nifty-cori-60alcq`.
+- 🚧 Not run on a real Mac/Drive/browser yet (none in this container).
+
+### Decisions Made
+- Build the unified tool by orchestrating the existing engines (picker render +
+  attachment copy + archiver mirror/verify) rather than duplicating logic.
+- Keep the building-block scripts; `desmond_export.py` is now the headline path.
+
+### Next Steps
+1. On the Mac: `python3 desmond_export.py` (or `--retry`), open `index.html`,
+   confirm inline media + that it's in local + Drive with a ✅ verify.
+2. Consider memory for very large histories (gather loads all records); could
+   stream per-conversation if needed.
+
+### Questions/Blockers
+- Real-Mac/Drive/browser run pending.
+
+---
+
+
 ## 2026-06-14 — Picker: local + Drive mirror + per-export verify report
 
 ### What We Built

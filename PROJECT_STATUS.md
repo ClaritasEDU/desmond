@@ -4,7 +4,7 @@
 > **Category:** Infrastructure
 > **Local Path:** `~/desmond/`
 
-## Overall Progress: ~90%
+## Overall Progress: ~92%
 
 v1 shipped (cross-platform message **text** exporters). Now: **real attachment
 archiving** (the actual photos/videos/files) and an upgraded picker that shows
@@ -12,6 +12,13 @@ media **inline**, **date/time ordered** with a newest↔oldest toggle — all
 Google Drive-ready.
 
 ## What's Working
+- **⭐ One-shot full exporter** (`desmond_export.py` + `desmond_export.sh`) — a
+  SINGLE command that exports the whole history into one browsable archive: open
+  `index.html`, click a conversation, read the full thread with **photos/videos
+  inline, date-ordered** (newest/oldest toggle), real attachments copied in.
+  Saved **locally + mirrored to Google Drive**, then **three-way verified** with a
+  report. Flags: `--photos-videos`, `--newest`, `--no-drive`, `--drive`, `--retry`.
+  Orchestrates the building blocks below.
 - **iMessage exporter** (`imessage_exporter.py`) — full + incremental text exports
   to JSON/CSV/markdown, contact name lookup, reactions, attachments (as labels),
   effects. **NEW:** saves locally **and** copies to Google Drive
@@ -56,13 +63,13 @@ Google Drive-ready.
 - Python 3 (stdlib only — sqlite3, shutil, http.server). No external dependencies.
 
 ## Next Steps
-1. On the Mac: `cd ~/desmond && git pull` then `python3 imessage_attachments.py --dry-run`
-   to preview total size, then `--full` to archive (pointed at Google Drive).
-2. Run `python3 imessage_picker.py`, pick a person with photos, save, and open
-   `conversation.html` — confirm inline images/videos and the order toggle.
+1. On the Mac: `cd ~/desmond && git pull` then `python3 desmond_export.py` (or
+   `--retry`) — open `index.html`, confirm inline media + a ✅ three-way verify,
+   and that it's in both local and Google Drive.
+2. Sanity-check memory/time on a very large history (the unified exporter loads
+   all records in one pass; could stream per-conversation if needed).
 3. Decide: add attachment extraction to the **Windows (iPhone backup)** and
    **Android (MMS base64)** paths so non-Mac users get media too.
-4. Optional: an inline-media HTML view for the full bulk archive as well.
 
 ## Blockers
 - Final verification of both the archiver and picker requires Chris's Mac
@@ -80,5 +87,6 @@ Google Drive-ready.
   **attachments live local + Drive** too, and added **three-way verification**
   (device vs local vs Drive) with a **diff report** (`VERIFY_REPORT.md`) and a
   **`--retry`** loop to drive to a full archive, and gave the **picker** the same
-  local + Drive + verify treatment. Three test suites (59 checks total, all
-  passing); docs updated.
+  local + Drive + verify treatment, then unified it all into **`desmond_export.py`**
+  — one command for the whole archive (text + media inline, local + Drive,
+  verified). Four test suites (73 checks total, all passing); docs updated.

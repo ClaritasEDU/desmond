@@ -586,14 +586,19 @@ def all_attachment_rows(cursor):
 
 
 def verify_archive(db_path=MESSAGES_DB, output_dir=None, drive_dir=None,
-                   expect_drive=True, verbose=True, write_report=True):
+                   drive_mirror=None, expect_drive=True, verbose=True,
+                   write_report=True):
     """Three-way reconciliation: Messages (the device) vs the LOCAL archive vs
     the GOOGLE DRIVE mirror. Confirms every downloadable attachment is present in
     all three places, and flags what's offloaded in iCloud or missing anywhere.
+
+    `drive_mirror` may be passed explicitly (e.g. by the unified exporter, whose
+    Drive folder differs); otherwise it's derived from `drive_dir`.
     """
     output_dir = output_dir or default_output_dir()
     manifest_path = os.path.join(output_dir, "attachments.json")
-    drive_mirror = drive_archive_dir(drive_dir) if expect_drive else None
+    if drive_mirror is None:
+        drive_mirror = drive_archive_dir(drive_dir) if expect_drive else None
 
     if not os.path.exists(manifest_path):
         if verbose:

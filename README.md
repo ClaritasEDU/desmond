@@ -20,6 +20,48 @@ The guide will ask about your phone and computer, then show you exactly what to 
 
 ---
 
+## ⭐ Easiest: one command (full archive, text + media inline)
+
+On a Mac, this single command exports your **whole** message history — text **and**
+the real photos/videos — into one browsable archive, saved **locally and on Google
+Drive**, then **verified**:
+
+```bash
+cd ~/desmond
+python3 desmond_export.py
+```
+
+Open the `index.html` it creates, click a conversation, and read the entire thread
+with **photos and videos inline, in date/time order**. (Or double-click
+`desmond_export.sh`.)
+
+```
+Desmond_Message_Archive/
+├── index.html                 # ← open this; searchable list of every conversation
+├── conversations/
+│   └── <Person>/
+│       ├── conversation.html  # full thread, media inline, date-ordered (newest/oldest toggle)
+│       └── attachments/       # the real files (named YYYY-MM-DD_HHMM_people_original)
+├── attachments.json / .csv    # manifest
+└── VERIFY_REPORT.md           # device vs local vs Google Drive
+```
+
+Useful flags: `--photos-videos` (images/videos only), `--newest` (newest first),
+`--no-drive` (local only), `--drive "PATH"` (choose the Drive folder), `--retry`
+(loop until local & Drive match). It reads Messages **read-only** and never
+deletes anything; re-runs are incremental.
+
+> *Why an `index.html` plus per-conversation files instead of one giant file?* A
+> full history can be hundreds of thousands of messages — too large for any browser
+> to open as a single page. One entry point that links to per-conversation
+> transcripts keeps everything fast and openable. (For a single conversation as one
+> self-contained file, use the picker below.)
+
+The sections below document the individual building blocks (text-only export, the
+attachment archiver, and the per-person picker), which `desmond_export.py` builds on.
+
+---
+
 ## Platform Support
 
 | Platform | Data Source | Auto Sync | Script |
@@ -501,6 +543,8 @@ The script will automatically search common folders (Downloads, Documents, Deskt
 ### macOS (iMessage)
 | File | Purpose |
 |------|---------|
+| `desmond_export.py` | **One-shot full export** — text + media inline, local + Drive, verified |
+| `desmond_export.sh` | Easy launcher for the one-shot full export |
 | `desmond.sh` | Automates iCloud Messages sync |
 | `imessage_exporter.py` | Exports message text from Mac |
 | `imessage_attachments.py` | Archives the actual photos/videos/files (Google Drive-ready); `--verify` checks completeness |
