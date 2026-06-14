@@ -253,8 +253,8 @@ John Smith/
 | Message Type | iMessage (Mac/Win) | Android |
 |--------------|-------------------|---------|
 | Text messages | Yes | Yes (SMS) |
-| Photos/videos | Metadata only | Metadata only (MMS) |
-| Audio messages | Metadata only | Metadata only |
+| Photos/videos | Files exported (`imessage_attachments.py`) | Metadata only (MMS) |
+| Audio messages | Files exported (`imessage_attachments.py`) | Metadata only |
 | Reactions (tapbacks) | Yes | No |
 | Message effects | Yes | No |
 | GamePigeon games | Yes | No |
@@ -309,7 +309,9 @@ John Smith/
 - No automated/scheduled exports
 
 ### All Platforms
-- Attachment files are not exported (only metadata)
+- Attachment files: **macOS exports the real photos/videos/files** via
+  `imessage_attachments.py`; Windows (iPhone backup) and Android still capture
+  attachment metadata only
 - Some special message types appear as "[unknown message type]"
 - Very old messages may have missing metadata
 
@@ -338,7 +340,9 @@ The Android exporter works exclusively with **SMS Backup & Restore** by SyncTech
 ## Future Considerations
 
 ### Potential Enhancements
-1. **Attachment export** - Copy actual photo/video files
+1. ✅ **Attachment export (macOS)** — `imessage_attachments.py` copies the real
+   photo/video/files into a browsable, Google Drive-ready archive. *Still to do:*
+   attachment extraction for Windows (iPhone backup) and Android (base64 in MMS XML).
 2. **Incremental Windows backups** - Detect and prompt for new backup
 3. **GUI version** - Cross-platform desktop app
 4. **Export filtering** - By date range, conversation, or content

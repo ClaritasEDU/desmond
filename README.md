@@ -20,6 +20,48 @@ The guide will ask about your phone and computer, then show you exactly what to 
 
 ---
 
+## ⭐ Easiest: one command (full archive, text + media inline)
+
+On a Mac, this single command exports your **whole** message history — text **and**
+the real photos/videos — into one browsable archive, saved **locally and on Google
+Drive**, then **verified**:
+
+```bash
+cd ~/desmond
+python3 desmond_export.py
+```
+
+Open the `index.html` it creates, click a conversation, and read the entire thread
+with **photos and videos inline, in date/time order**. (Or double-click
+`desmond_export.sh`.)
+
+```
+Desmond_Message_Archive/
+├── index.html                 # ← open this; searchable list of every conversation
+├── conversations/
+│   └── <Person>/
+│       ├── conversation.html  # full thread, media inline, date-ordered (newest/oldest toggle)
+│       └── attachments/       # the real files (named YYYY-MM-DD_HHMM_people_original)
+├── attachments.json / .csv    # manifest
+└── VERIFY_REPORT.md           # device vs local vs Google Drive
+```
+
+Useful flags: `--photos-videos` (images/videos only), `--newest` (newest first),
+`--no-drive` (local only), `--drive "PATH"` (choose the Drive folder), `--retry`
+(loop until local & Drive match). It reads Messages **read-only** and never
+deletes anything; re-runs are incremental.
+
+> *Why an `index.html` plus per-conversation files instead of one giant file?* A
+> full history can be hundreds of thousands of messages — too large for any browser
+> to open as a single page. One entry point that links to per-conversation
+> transcripts keeps everything fast and openable. (For a single conversation as one
+> self-contained file, use the picker below.)
+
+The sections below document the individual building blocks (text-only export, the
+attachment archiver, and the per-person picker), which `desmond_export.py` builds on.
+
+---
+
 ## Platform Support
 
 | Platform | Data Source | Auto Sync | Script |
@@ -134,6 +176,11 @@ Desmond will click Sync Now every 15 seconds and show your progress:
 python3 imessage_exporter.py --full
 ```
 
+Your messages are saved **locally** *and* automatically copied to **Google Drive**
+(into `Desmond_Messages_Export/`) if Google Drive for desktop is installed — so the
+text archive lives in both places. Use `--no-drive` to skip the Drive copy, or
+`--drive "/path/to/My Drive/Messages"` to choose where it goes.
+
 ### 4. Automatic Exports (optional)
 
 To run exports hourly in the background:
@@ -142,6 +189,126 @@ To run exports hourly in the background:
 chmod +x setup_imessage_exporter.sh
 ./setup_imessage_exporter.sh
 ```
+
+---
+
+## Archiving Photos & Videos (local + Google Drive)
+
+The exporters above save your message **text** and note when a photo/video was
+sent. To actually **keep the photos, videos, and files themselves**, use the
+attachment archiver. It copies the real media out of Messages into a browsable
+folder that lives in **both** places: a **local** copy *and* a **Google Drive**
+mirror.
+
+> Runs on your **Mac** (that's where Messages and the files live). It archives
+> locally first, then mirrors to **Google Drive** if Google Drive for desktop is
+> installed (auto-detected). The local copy is always kept.
+
+```bash
+# 1. See how much space it will take first (copies nothing):
+python3 imessage_attachments.py --dry-run
+
+# 2. Back up everything: local copy + mirror to Google Drive + auto-verify
+python3 imessage_attachments.py --full
+
+# Keep going until local AND Drive are 100% complete (loops a few passes):
+python3 imessage_attachments.py --retry
+
+# Other options:
+python3 imessage_attachments.py --full --photos-videos   # images + videos only
+python3 imessage_attachments.py --full --no-drive         # local copy only
+python3 imessage_attachments.py --full --drive "/Users/you/Library/CloudStorage/GoogleDrive-…/My Drive"
+```
+
+Or just double-click `desmond_attachments.sh`.
+
+**What you get (in both the local folder and Google Drive):**
+
+```
+Desmond_Message_Attachments/
+├── ATTACHMENTS_INDEX.md     # counts, total size, top conversations, what's missing
+├── attachments.json         # manifest: every file → conversation, sender, date, text
+├── attachments.csv          # same, for spreadsheets
+├── VERIFY_REPORT.md         # per-place counts + the exact diff (after --verify)
+├── Mom/
+│   ├── 2024-01-15_0932_Mom_IMG_1234.HEIC
+│   └── 2024-03-02_1810_Mom_movie.MOV
+└── ...
+```
+
+Files are named `YYYY-MM-DD_HHMM_<people>_originalname` so they sort by date, name
+the people in the chat, and stay recognizable. To **find** something later, browse
+the per-contact folders or open `attachments.csv` and filter by person/date/type.
+
+**Reads Messages read-only — it never modifies or deletes anything.** Re-runs are
+incremental, and the manifest is cumulative (history is never lost).
+
+> **⚠️ Before you delete anything from your phone to free up space:** if
+> "Messages in iCloud" with "Optimize Mac Storage" is on, some originals may be
+> offloaded and not on your Mac yet. Verify lists these as **offloaded**.
+> Re-download them (open the thread, turn off "Optimize Mac Storage", or run
+> `desmond.sh` to sync) and re-run until nothing is missing — *then* it's safe to
+> clear space on the phone.
+
+---
+
+### Verify: device vs local vs Google Drive
+
+Confirm every attachment exists in all **three** places — what Messages knows
+about (the device), the local archive, and Google Drive:
+
+```bash
+python3 imessage_attachments.py --verify      # or double-click desmond_verify.sh
+```
+
+It prints per-place counts and writes a **report** (`VERIFY_REPORT.md` +
+`verify_diff.json`) listing exactly what's missing where:
+
+```
+ON THE DEVICE (Messages):  12,431 attachments — 12,419 downloaded, 12 offloaded in iCloud
+IN LOCAL ARCHIVE:          12,419 / 12,419  ✅
+ON GOOGLE DRIVE:           12,419 / 12,419  ✅
+✅ ALL 12,419 attachments are present in all three places.
+```
+
+To close any gap, re-run the backup (it re-copies what's missing and re-mirrors),
+or use `--retry` to loop until complete. Items still **offloaded in iCloud** must
+be downloaded in Messages first. Exit code is non-zero until everything matches,
+so it's scriptable.
+
+> Drive uploads in the background — after a green verdict, glance at the Google
+> Drive app (or drive.google.com) to confirm the upload finished before clearing
+> space on your phone.
+
+---
+
+## Browse conversations with photos inline (the picker)
+
+Prefer to grab specific people and *read* the thread with media in place? Use the
+browser picker:
+
+```bash
+python3 imessage_picker.py     # opens in your browser
+```
+
+- **Search & pick people** (the controls you already know), choose a date range,
+  preview, and trim before saving.
+- Turn on **📎 Photos / videos / files** to copy the **real attachments** into the
+  export and show them **inline in the conversation** — images render, videos and
+  audio play, right where they were sent.
+- **Order toggle:** oldest-first or newest-first — set it before saving *and* flip
+  it live in the saved `conversation.html`.
+- **Lives in both places:** each pick is saved to a **local** folder and mirrored
+  to **Google Drive** (toggle "☁︎ Also copy to Google Drive" in the UI). After
+  saving it's **verified** — the UI shows `local N/N, Drive N/N` and writes a
+  `VERIFY_REPORT.md` into the export.
+- Attachment filenames lead with the **date/time and the people in the chat**,
+  e.g. `2024-01-15_0932_Mom_IMG_1234.HEIC`. Originals are preserved; HEIC photos
+  also get a JPG copy so they display in any browser.
+
+Each saved export folder contains `conversation.html` (read it here),
+`conversation.md`, `messages.json`, `messages.csv`, `VERIFY_REPORT.md`, and an
+`attachments/` folder — in both the local copy and the Google Drive mirror.
 
 ---
 
@@ -261,7 +428,7 @@ The script will automatically search common folders (Downloads, Documents, Deskt
 | **Special content** | Yes (GamePigeon, etc.) | Yes | No |
 | **Message effects** | Yes | Yes | No |
 | **Call logs** | No | No | Yes (optional) |
-| **MMS/photos** | Metadata only | Metadata only | Metadata only |
+| **MMS/photos (the actual files)** | **Exported** (`imessage_attachments.py`) | Metadata only | Metadata only |
 
 ### Key Differences
 
@@ -376,8 +543,14 @@ The script will automatically search common folders (Downloads, Documents, Deskt
 ### macOS (iMessage)
 | File | Purpose |
 |------|---------|
+| `desmond_export.py` | **One-shot full export** — text + media inline, local + Drive, verified |
+| `desmond_export.sh` | Easy launcher for the one-shot full export |
 | `desmond.sh` | Automates iCloud Messages sync |
-| `imessage_exporter.py` | Exports messages from Mac |
+| `imessage_exporter.py` | Exports message text from Mac |
+| `imessage_attachments.py` | Archives the actual photos/videos/files (Google Drive-ready); `--verify` checks completeness |
+| `desmond_attachments.sh` | Easy launcher for the attachment archiver |
+| `desmond_verify.sh` | Verifies all attachments are in the Drive archive |
+| `imessage_picker.py` | Browser UI to pick/preview/export specific conversations |
 | `setup_imessage_exporter.sh` | Sets up hourly automatic exports |
 
 ### Windows (iPhone)

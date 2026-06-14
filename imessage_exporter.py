@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 iMessage Exporter for Claude
-Automatically exports your iMessages to readable markdown files.
+Exports your iMessages to readable markdown + JSON/CSV. Saves locally and also
+copies the export to Google Drive (if installed) so messages live in both places.
 """
 
 import sqlite3
@@ -9,6 +10,7 @@ import os
 import json
 import re
 import glob
+import shutil
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -21,6 +23,48 @@ STATE_FILE = os.path.expanduser("~/Downloads/iMessages_Export/.export_state.json
 
 # Global contact lookup cache
 CONTACTS_CACHE = {}
+
+# Also copy the export here (inside Google Drive) so messages live local + Drive.
+DRIVE_SUBFOLDER = "Desmond_Messages_Export"
+
+
+def find_google_drive_dir():
+    """Best-effort detection of a 'Google Drive for desktop' folder on macOS.
+    (Mirrors the helper in imessage_attachments.py; duplicated here to avoid a
+    circular import.)"""
+    candidates = []
+    candidates += glob.glob(os.path.expanduser("~/Library/CloudStorage/GoogleDrive-*/My Drive"))
+    candidates += glob.glob(os.path.expanduser("~/Library/CloudStorage/GoogleDrive-*"))
+    candidates.append(os.path.expanduser("~/Google Drive/My Drive"))
+    candidates.append(os.path.expanduser("~/Google Drive"))
+    for path in candidates:
+        if os.path.isdir(path):
+            return path
+    return None
+
+
+def mirror_to_drive(src_dir=OUTPUT_DIR, drive_dir=None):
+    """Copy the local export into Google Drive so the messages live in BOTH
+    places. Returns the Drive destination path, or None if there's no Drive."""
+    if not os.path.isdir(src_dir):
+        return None
+    drive = drive_dir or find_google_drive_dir()
+    if not drive:
+        print("\nNo Google Drive folder detected — your messages are saved locally:")
+        print(f"  {src_dir}")
+        print("Install 'Google Drive for desktop' (or pass --drive PATH) to also "
+              "keep a copy on Drive.")
+        return None
+    dest = os.path.join(drive, DRIVE_SUBFOLDER)
+    try:
+        shutil.copytree(src_dir, dest, dirs_exist_ok=True)
+        print("\nYour messages now live in BOTH places:")
+        print(f"  Local:        {src_dir}")
+        print(f"  Google Drive: {dest}")
+        return dest
+    except Exception as e:
+        print(f"\nSaved locally at {src_dir}, but couldn't copy to Google Drive: {e}")
+        return None
 
 def load_contacts():
     """Load contacts from the Mac AddressBook database."""
@@ -790,7 +834,16 @@ def main():
         # Export AI-ready JSON and CSV
         print("\nCreating AI-ready exports...")
         export_ai_ready(full_export=full_export)
-            
+
+        # Also copy everything to Google Drive (messages live local + Drive).
+        if "--no-drive" not in sys.argv:
+            drive_override = None
+            if "--drive" in sys.argv:
+                idx = sys.argv.index("--drive")
+                if idx + 1 < len(sys.argv):
+                    drive_override = os.path.expanduser(sys.argv[idx + 1])
+            mirror_to_drive(OUTPUT_DIR, drive_override)
+
     except Exception as e:
         print(f"Error: {e}")
         import traceback

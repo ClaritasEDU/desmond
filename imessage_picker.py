@@ -7,7 +7,9 @@ would be exported before anything is written to disk. Trim it down with
 content filters, keyword include/exclude, a message cap, redaction, and
 per-message deselection. Only what you approve gets saved.
 
-Output lands in ~/Downloads/iMessages_Export/_picks/.
+Output lands in your Google Drive folder (auto-detected) or ~/Downloads —
+each pick gets its own folder with conversation.html (photos/videos inline,
+newest/oldest toggle), conversation.md, messages.json/csv, and attachments/.
 
 Run with:  python3 imessage_picker.py
 Opens automatically in your browser. Nothing is uploaded anywhere.
@@ -17,6 +19,7 @@ import os
 import re
 import csv
 import json
+import shutil
 import sqlite3
 import webbrowser
 import threading
@@ -27,10 +30,32 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # Reuse the battle-tested contact + timestamp helpers from the main exporter
 import imessage_exporter as core
+# Reuse Google Drive detection + filename helpers from the attachment archiver
+import imessage_attachments as attach
 
 MESSAGES_DB = os.path.expanduser("~/Library/Messages/chat.db")
-OUTPUT_DIR = os.path.expanduser("~/Downloads/iMessages_Export/_picks")
+
+
+def default_dest():
+    """Local primary save location for picks (~/Downloads/Desmond_Message_Picks).
+    Each export is also mirrored to Google Drive when available, so a pick lives
+    in BOTH places. The local copy is always kept."""
+    return os.path.expanduser("~/Downloads/Desmond_Message_Picks")
+
+
+def drive_picks_base(override=None):
+    """The Google Drive folder picks are mirrored into, or None if no Drive."""
+    if override:
+        return os.path.expanduser(override)
+    gd = attach.find_google_drive_dir()
+    return os.path.join(gd, "Desmond_Message_Picks") if gd else None
+
+
+OUTPUT_DIR = default_dest()
 PORT = 8765
+ATTACH_SUBDIR = "attachments"
+# Formats browsers can't show natively → also make a JPG copy (originals kept).
+WEB_CONVERT_EXTS = {".heic", ".heif", ".tif", ".tiff"}
 
 # Apple stores dates as nanoseconds since 2001-01-01
 APPLE_EPOCH_OFFSET = 978307200
@@ -191,21 +216,27 @@ def iter_messages(cursor, since_apple=None, until_apple=None):
 
 
 def attachments_for(cursor):
+    """Map message_id -> list of attachment dicts (id + category + real file path)."""
     cursor.execute("""
-        SELECT message_attachment_join.message_id, attachment.mime_type
+        SELECT message_attachment_join.message_id, attachment.ROWID,
+               attachment.mime_type, attachment.filename, attachment.transfer_name
         FROM attachment
         JOIN message_attachment_join ON attachment.ROWID = message_attachment_join.attachment_id
     """)
     result = defaultdict(list)
-    for msg_id, mime_type in cursor.fetchall():
+    for msg_id, att_id, mime_type, filename, transfer_name in cursor.fetchall():
         if mime_type and mime_type.startswith("image"):
-            result[msg_id].append("photo")
+            category = "photo"
         elif mime_type and mime_type.startswith("video"):
-            result[msg_id].append("video")
+            category = "video"
         elif mime_type and mime_type.startswith("audio"):
-            result[msg_id].append("audio")
+            category = "audio"
         else:
-            result[msg_id].append("file")
+            category = "file"
+        result[msg_id].append({
+            "id": att_id, "category": category, "mime": mime_type,
+            "filename": filename, "transfer_name": transfer_name,
+        })
     return result
 
 
@@ -248,18 +279,20 @@ def make_record(row, att, cursor, person, want_text, want_att, want_react):
 
     sender = "Me" if is_from_me else (
         core.get_contact_name(handle_id, cursor) if handle_id else "Unknown")
-    attachments = att.get(rowid, [])
+    atts = att.get(rowid, [])
 
     if assoc and assoc in REACTIONS:
         if not want_react:
             return None
         reaction = REACTIONS[assoc]
         content, mtype = (text or reaction), "reaction"
-        att_out = []
+        text_plain = content
+        cats, files = [], []
     else:
         reaction = None
+        cats = [a["category"] for a in atts]
         text_part = text if (text and want_text) else ""
-        att_part = " ".join(f"[{a}]" for a in attachments) if (attachments and want_att) else ""
+        att_part = " ".join(f"[{c}]" for c in cats) if (cats and want_att) else ""
         if text_part and att_part:
             content, mtype = f"{text_part} {att_part}", "text_with_attachment"
         elif text_part:
@@ -268,7 +301,9 @@ def make_record(row, att, cursor, person, want_text, want_att, want_react):
             content, mtype = att_part, "attachment"
         else:
             return None
-        att_out = attachments if want_att else []
+        text_plain = text_part
+        cats = cats if want_att else []
+        files = atts if want_att else []
 
     return {
         "id": rowid,
@@ -280,8 +315,10 @@ def make_record(row, att, cursor, person, want_text, want_att, want_react):
         "is_from_me": bool(is_from_me),
         "message_type": mtype,
         "text": content,
-        "has_attachment": len(att_out) > 0,
-        "attachment_types": att_out,
+        "text_plain": text_plain,
+        "has_attachment": len(files) > 0,
+        "attachment_types": cats,
+        "attachments": files,
         "reaction": reaction,
     }
 
@@ -356,59 +393,273 @@ def filter_summary(f):
     return " · ".join(b for b in bits if b)
 
 
+def apply_order(records, order):
+    """Records arrive oldest→newest; return them in the requested order."""
+    return list(reversed(records)) if order == "newest" else list(records)
+
+
+def _h(text):
+    return (str(text or "")
+            .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+
+
+def _att_filename(rec, original):
+    """Date/time stamp FIRST, then the people in the chat, then the original name."""
+    when = f"{rec.get('date', '')}_{rec.get('time', '')[:5].replace(':', '')}"
+    people = safe_name(rec.get("person") or "Unknown")[:40]
+    return attach.safe_name_keep_ext(f"{when}_{people}_{original}")
+
+
+def copy_attachment(a, rec, folder):
+    """Copy ONE real attachment into <folder>/attachments/, preserving the
+    original file byte-for-byte. Returns a display dict for the transcript."""
+    src = os.path.expanduser((a or {}).get("filename") or "")
+    original = ((a or {}).get("transfer_name")
+               or (os.path.basename(src) if src else "") or "file")
+    category = (a or {}).get("category") or "file"
+    if not src or not os.path.exists(src):
+        return {"category": category, "name": original, "missing": True}
+    adir = os.path.join(folder, ATTACH_SUBDIR)
+    os.makedirs(adir, exist_ok=True)
+    dest = os.path.join(adir, _att_filename(rec, original))
+    if os.path.exists(dest):
+        root, ext = os.path.splitext(dest)
+        dest = f"{root}_{abs(hash(src)) % 100000}{ext}"
+    try:
+        shutil.copy2(src, dest)  # byte-for-byte copy of the original + its mtime
+    except Exception:
+        return {"category": category, "name": original, "missing": True}
+    rel = os.path.relpath(dest, folder).replace(os.sep, "/")
+    display = rel
+    if os.path.splitext(dest)[1].lower() in WEB_CONVERT_EXTS:
+        # Also make a JPG so HEIC/TIFF show in any browser; the original is kept.
+        jpg = os.path.splitext(dest)[0] + ".jpg"
+        try:
+            subprocess.run(["sips", "-s", "format", "jpeg", dest, "--out", jpg],
+                           check=True, capture_output=True)
+            display = os.path.relpath(jpg, folder).replace(os.sep, "/")
+        except Exception:
+            pass
+    return {"id": (a or {}).get("id"), "category": category, "name": original,
+            "missing": False, "mime": (a or {}).get("mime"),
+            "path": rel, "display": display}
+
+
+HTML_TEMPLATE = r"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__</title>
+<style>
+ body{font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0;background:#0f1115;color:#e7eaf0;}
+ .wrap{max-width:820px;margin:0 auto;padding:24px 18px 80px;}
+ h1{font-size:22px;margin:0 0 4px;}
+ .sub{color:#9aa3b2;font-size:13px;margin:0 0 14px;}
+ .bar{position:sticky;top:0;background:#0f1115cc;backdrop-filter:blur(6px);padding:10px 0;border-bottom:1px solid #2a2f3a;margin-bottom:6px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;z-index:5;}
+ button{background:#22304a;color:#fff;border:1px solid #4f8cff;border-radius:8px;padding:8px 12px;font-size:13.5px;cursor:pointer;}
+ .person{margin:24px 0 4px;font-size:16px;font-weight:700;color:#4f8cff;border-top:1px solid #2a2f3a;padding-top:16px;}
+ .day{color:#9aa3b2;font-size:12px;text-transform:uppercase;letter-spacing:.04em;margin:16px 0 6px;}
+ .m{padding:7px 0;border-bottom:1px solid #181b22;}
+ .m .meta{color:#9aa3b2;font-size:11.5px;margin-bottom:2px;}
+ .m .who{color:#4f8cff;font-weight:600;} .m.me .who{color:#2e9d6f;}
+ .m .txt{white-space:pre-wrap;}
+ .m.react .txt{color:#9aa3b2;font-style:italic;}
+ img.att{display:block;margin:6px 0;max-width:340px;max-height:340px;border-radius:10px;border:1px solid #2a2f3a;}
+ video.att,audio.att{display:block;margin:6px 0;width:340px;max-width:100%;}
+ .miss{color:#d6a;} a.file{color:#4f8cff;}
+</style></head><body><div class="wrap">
+<h1>__TITLE__</h1>
+<p class="sub">__SUMMARY__</p>
+<div class="bar">
+  <button id="toggle">↕ Order: <b id="ord"></b></button>
+  <span class="sub" id="count" style="margin:0"></span>
+</div>
+<div id="out"></div>
+</div>
+<script>
+const RECORDS = __RECORDS__;
+let order = "__DEFAULT_ORDER__";
+function esc(s){return (s||"").replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));}
+function media(m){
+  if(m.missing) return '<div class="miss">['+esc(m.category)+' — not downloaded from iCloud]</div>';
+  const p=esc(m.path), d=esc(m.display||m.path);
+  if(m.category==="photo") return '<a href="'+p+'" target="_blank"><img class="att" loading="lazy" src="'+d+'"></a>';
+  if(m.category==="video") return '<video class="att" controls preload="metadata" src="'+p+'"></video>';
+  if(m.category==="audio") return '<audio class="att" controls src="'+p+'"></audio>';
+  return '<a class="file" href="'+p+'" target="_blank">📎 '+esc(m.name)+'</a>';
+}
+function render(){
+  document.getElementById("ord").textContent = (order==="newest"?"newest first":"oldest first");
+  const recs = RECORDS.slice().sort((a,b)=> a.timestamp<b.timestamp?-1:(a.timestamp>b.timestamp?1:0));
+  if(order==="newest") recs.reverse();
+  const out=document.getElementById("out"); out.innerHTML="";
+  const byPerson={}, pOrder=[];
+  recs.forEach(r=>{ if(!(r.person in byPerson)){byPerson[r.person]=[];pOrder.push(r.person);} byPerson[r.person].push(r); });
+  pOrder.forEach(person=>{
+    const h=document.createElement("div"); h.className="person"; h.textContent=person; out.appendChild(h);
+    let lastDay="";
+    byPerson[person].forEach(r=>{
+      if(r.date!==lastDay){ lastDay=r.date; const d=document.createElement("div"); d.className="day"; d.textContent=r.date; out.appendChild(d); }
+      const m=document.createElement("div");
+      m.className="m"+(r.is_from_me?" me":"")+(r.message_type==="reaction"?" react":"");
+      let html='<div class="meta">'+esc(r.time.slice(0,5))+' · <span class="who">'+esc(r.sender)+'</span></div>';
+      if(r.text_plain) html+='<div class="txt">'+esc(r.text_plain)+'</div>';
+      (r.media||[]).forEach(mm=> html+=media(mm));
+      m.innerHTML=html; out.appendChild(m);
+    });
+  });
+  document.getElementById("count").textContent = recs.length.toLocaleString()+" messages";
+}
+document.getElementById("toggle").onclick=()=>{ order=(order==="newest"?"oldest":"newest"); render(); };
+render();
+</script></body></html>"""
+
+
+def render_html(records, people, summary, default_order):
+    title = "Messages — " + (", ".join(people) if people else "export")
+    payload = json.dumps(records).replace("</", "<\\/")
+    return (HTML_TEMPLATE
+            .replace("__TITLE__", _h(title))
+            .replace("__SUMMARY__", _h(summary))
+            .replace("__RECORDS__", payload)
+            .replace("__DEFAULT_ORDER__", "newest" if default_order == "newest" else "oldest"))
+
+
 def export_records(records, people, f):
-    """Write approved records to disk. Returns a result dict."""
+    """Write the approved messages as an inline-media HTML transcript (plus
+    markdown / JSON / CSV), copying the real attachments alongside. Returns a
+    result dict."""
     if not records:
         return {"ok": False, "error": "Nothing to export — every message was filtered out or deselected."}
 
+    order = f.get("order", "oldest")
+    include_att = "attachments" in (f.get("types") or [])
+    dest_root = os.path.expanduser(f.get("dest") or "") or OUTPUT_DIR
+
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    if len(people) == 1:
-        label = safe_name(people[0])
-    else:
-        label = f"{len(people)}_people"
-    folder = os.path.join(OUTPUT_DIR, f"{label}_{f.get('range', 'range')}_{stamp}")
+    label = safe_name(people[0]) if len(people) == 1 else f"{len(people)}_people"
+    folder = os.path.join(dest_root, f"{label}_{f.get('range', 'range')}_{stamp}")
     os.makedirs(folder, exist_ok=True)
 
-    summary = filter_summary(f)
+    records = apply_order(records, order)
 
-    # 1. Readable transcript — grouped by person, then date
-    by_person = defaultdict(lambda: defaultdict(list))
+    # Copy the real attachment files; build per-message media lists.
+    att_saved = att_missing = 0
+    media_by_id = {}
     for r in records:
-        by_person[r["person"]][r["date"]].append(r)
+        media = []
+        if include_att:
+            for a in (r.get("attachments") or []):
+                info = copy_attachment(a, r, folder)
+                media.append(info)
+                if info.get("missing"):
+                    att_missing += 1
+                else:
+                    att_saved += 1
+        media_by_id[r["id"]] = media
+
+    summary = filter_summary(f)
+    if include_att:
+        summary += f" · {att_saved} attachments saved"
+        if att_missing:
+            summary += f" ({att_missing} not downloaded)"
+
+    dates = [r["date"] for r in records]
+    first_date, last_date = min(dates), max(dates)
+
+    # 1. HTML transcript — inline photos/videos, newest/oldest toggle.
+    html_records = [{
+        "person": r["person"], "date": r["date"], "time": r["time"],
+        "timestamp": r["timestamp"], "sender": r["sender"],
+        "is_from_me": r["is_from_me"], "message_type": r["message_type"],
+        "text_plain": (r.get("text_plain")
+                       or (r.get("text", "") if r["message_type"] == "reaction" else "")),
+        "media": media_by_id[r["id"]],
+    } for r in records]
+    with open(os.path.join(folder, "conversation.html"), "w", encoding="utf-8") as hf:
+        hf.write(render_html(html_records, people, summary, order))
+
+    # 2. Readable markdown — grouped by person then day, in the chosen order.
+    by_person = defaultdict(list)
+    for r in records:
+        by_person[r["person"]].append(r)
     with open(os.path.join(folder, "conversation.md"), "w", encoding="utf-8") as md:
         md.write("# Message export\n\n")
         md.write(f"**People:** {', '.join(people)}  \n")
         md.write(f"**Messages:** {len(records):,}  \n")
         md.write(f"**Filters:** {summary}  \n")
-        md.write(f"**From:** {records[0]['date']} **to** {records[-1]['date']}\n")
-        for person in sorted(by_person):
+        md.write(f"**Order:** {'newest first' if order == 'newest' else 'oldest first'}  \n")
+        md.write(f"**Range:** {first_date} to {last_date}\n")
+        for person, rows in by_person.items():
             md.write(f"\n---\n\n# {person}\n")
-            for date_str in sorted(by_person[person]):
-                md.write(f"\n## {date_str}\n\n")
-                for r in by_person[person][date_str]:
-                    line = f"*{r['text']}*" if r["message_type"] == "reaction" else r["text"]
-                    md.write(f"**{r['time'][:5]} — {r['sender']}:** {line}\n\n")
+            last_day = None
+            for r in rows:
+                if r["date"] != last_day:
+                    md.write(f"\n## {r['date']}\n\n")
+                    last_day = r["date"]
+                body = f"*{r.get('text', '')}*" if r["message_type"] == "reaction" else (r.get("text_plain") or "")
+                md.write(f"**{r['time'][:5]} — {r['sender']}:** {body}\n\n")
+                for m in media_by_id[r["id"]]:
+                    if m.get("missing"):
+                        md.write(f"  - _[{m['category']} — not downloaded from iCloud]_\n")
+                    elif m["category"] == "photo":
+                        md.write(f"  ![{m['name']}]({m['display']})\n")
+                    else:
+                        md.write(f"  - [📎 {m['name']}]({m['path']})\n")
 
-    # 2. JSON for Claude
+    # 3. JSON (with media paths)
+    json_messages = []
+    for r in records:
+        d = {k: r.get(k) for k in ("id", "timestamp", "date", "time", "person",
+             "sender", "is_from_me", "message_type", "text", "text_plain",
+             "attachment_types", "reaction")}
+        d["media"] = media_by_id[r["id"]]
+        json_messages.append(d)
     with open(os.path.join(folder, "messages.json"), "w", encoding="utf-8") as jf:
         json.dump({
-            "people": people,
-            "filters": summary,
+            "people": people, "filters": summary, "order": order,
             "exported": datetime.now().isoformat(),
             "message_count": len(records),
-            "messages": records,
+            "attachments_saved": att_saved, "attachments_missing": att_missing,
+            "messages": json_messages,
         }, jf, indent=2)
 
-    # 3. CSV for spreadsheets
+    # 4. CSV
     fields = ["timestamp", "date", "time", "person", "sender", "is_from_me",
-              "message_type", "text", "has_attachment", "attachment_types", "reaction"]
+              "message_type", "text", "has_attachment", "attachment_types",
+              "reaction", "attachment_files"]
     with open(os.path.join(folder, "messages.csv"), "w", newline="", encoding="utf-8") as cf:
         writer = csv.DictWriter(cf, fieldnames=fields, extrasaction="ignore")
         writer.writeheader()
         for r in records:
             row = r.copy()
             row["attachment_types"] = ",".join(row.get("attachment_types") or [])
+            row["attachment_files"] = ",".join(
+                m["path"] for m in media_by_id[r["id"]] if not m.get("missing"))
             writer.writerow(row)
+
+    # 5. Mirror the whole export to Google Drive (so picks live local + Drive).
+    drive_folder = None
+    if f.get("mirror_drive", True):
+        drive_base = drive_picks_base(f.get("drive"))
+        if drive_base:
+            drive_folder = os.path.join(drive_base, os.path.basename(folder))
+            attach.mirror_tree(folder, drive_folder)
+
+    # 6. Verify the pick is present in both places; write a per-export report.
+    saved_media = [(r, m) for r in records for m in media_by_id[r["id"]]
+                   if not m.get("missing") and m.get("path")]
+    in_local = sum(1 for _r, m in saved_media
+                   if os.path.exists(os.path.join(folder, m["path"])))
+    in_drive = 0
+    missing_drive = []
+    if drive_folder:
+        for _r, m in saved_media:
+            if os.path.exists(os.path.join(drive_folder, m["path"])):
+                in_drive += 1
+            else:
+                missing_drive.append((_r, m))
+    write_pick_report(folder, drive_folder, people, summary, att_saved, att_missing,
+                      in_local, in_drive, saved_media, missing_drive)
 
     try:
         subprocess.run(["open", folder], check=False)
@@ -416,7 +667,62 @@ def export_records(records, people, f):
         pass
 
     return {"ok": True, "count": len(records), "folder": folder,
-            "first": records[0]["date"], "last": records[-1]["date"]}
+            "drive_folder": drive_folder,
+            "first": first_date, "last": last_date,
+            "attachments_saved": att_saved, "attachments_missing": att_missing,
+            "in_local": in_local, "in_drive": in_drive,
+            "missing_drive": len(missing_drive)}
+
+
+def write_pick_report(folder, drive_folder, people, summary, att_saved, att_missing,
+                      in_local, in_drive, saved_media, missing_drive):
+    """Per-export verification report: how many attachments in the local export
+    vs Google Drive, and the list of any that didn't mirror."""
+    missing_local = [(r, m) for r, m in saved_media
+                     if not os.path.exists(os.path.join(folder, m["path"]))]
+
+    def items(pairs):
+        return [{"person": r["person"], "date": r["date"],
+                 "name": m.get("name"), "path": m.get("path")} for r, m in pairs]
+
+    with open(os.path.join(folder, "verify_diff.json"), "w", encoding="utf-8") as jf:
+        json.dump({
+            "generated": datetime.now().isoformat(),
+            "people": people, "filters": summary,
+            "counts": {"attachments_saved": att_saved, "offloaded": att_missing,
+                       "in_local": in_local, "in_drive": in_drive,
+                       "drive_mirror": bool(drive_folder)},
+            "missing_local": items(missing_local),
+            "missing_drive": items(missing_drive),
+        }, jf, indent=2)
+
+    ok = (in_local == att_saved) and (not drive_folder or in_drive == att_saved)
+    verdict = ("✅ present in all places" if ok and not att_missing else
+               "✅ local + Drive complete; some offloaded in iCloud" if ok else
+               "⚠️ some attachments missing — re-export")
+    with open(os.path.join(folder, "VERIFY_REPORT.md"), "w", encoding="utf-8") as mf:
+        mf.write("# Pick Verification Report\n\n")
+        mf.write(f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M')}  \n")
+        mf.write(f"**People:** {', '.join(people)}  \n")
+        mf.write(f"**Filters:** {summary}\n\n")
+        mf.write("## Attachments per place\n\n| Place | Attachments |\n|---|---|\n")
+        mf.write(f"| Saved by this pick | {att_saved} "
+                 f"({att_missing} offloaded/not downloaded) |\n")
+        mf.write(f"| Local export | {in_local} / {att_saved} |\n")
+        drive_cell = f"{in_drive} / {att_saved}" if drive_folder else "not mirrored"
+        mf.write(f"| Google Drive | {drive_cell} |\n\n")
+        mf.write(f"**Verdict:** {verdict}\n")
+        if missing_drive:
+            mf.write(f"\n## Missing from Google Drive ({len(missing_drive)})\n\n")
+            for r, m in missing_drive[:500]:
+                mf.write(f"- {r['date']} · {r['person']} · {m.get('name')}\n")
+
+    if drive_folder:
+        for fn in ("VERIFY_REPORT.md", "verify_diff.json"):
+            try:
+                shutil.copy2(os.path.join(folder, fn), os.path.join(drive_folder, fn))
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -521,14 +827,22 @@ PAGE = r"""<!DOCTYPE html>
     <label class="lbl">Content types</label>
     <div class="toggles" id="types">
       <div class="tg on" data-t="text">Text</div>
-      <div class="tg on" data-t="attachments">Attachments</div>
+      <div class="tg on" data-t="attachments">📎 Photos / videos / files</div>
       <div class="tg on" data-t="reactions">Reactions</div>
     </div>
+    <div class="mut">Turn on “Photos / videos / files” to copy the real
+      attachments into the export (originals preserved) and show them inline in
+      the transcript.</div>
     <label class="lbl" style="margin-top:14px">Direction</label>
     <div class="seg" id="dir">
       <div class="on" data-d="both">Both</div>
       <div data-d="mine">Only me</div>
       <div data-d="theirs">Only them</div>
+    </div>
+    <label class="lbl" style="margin-top:14px">Order (toggle anytime in the saved file too)</label>
+    <div class="seg" id="order">
+      <div class="on" data-o="oldest">Oldest first</div>
+      <div data-o="newest">Newest first</div>
     </div>
     <div class="row" style="margin-top:14px">
       <div>
@@ -550,6 +864,17 @@ PAGE = r"""<!DOCTYPE html>
         <div class="tg" id="redact" style="text-align:center" data-on="0">🔒 Scrub phones, emails, addresses</div>
       </div>
     </div>
+  </div>
+
+  <div class="card">
+    <h2>4 · Where to save</h2>
+    <label class="lbl">Local folder (always kept)</label>
+    <input type="text" id="dest" value="__DEFAULT_DEST__">
+    <div class="tg on" id="mirror" style="text-align:center;margin-top:12px">☁︎ Also copy to Google Drive</div>
+    <div class="mut" style="margin-top:8px">Google Drive: <code>__DRIVE_DEST__</code></div>
+    <div class="mut">Saved locally first, then mirrored to Google Drive — so each
+      pick (attachments included) lives in <b>both</b> places. After saving, it's
+      verified and a <code>VERIFY_REPORT.md</code> is written.</div>
   </div>
 
   <div class="bar">
@@ -577,7 +902,7 @@ PAGE = r"""<!DOCTYPE html>
 </div>
 
 <script>
-const state = { people: new Set(), range: "7d", dir: "both", redact: false, shown: [] };
+const state = { people: new Set(), range: "7d", dir: "both", order: "oldest", redact: false, mirror: true, shown: [] };
 
 function $(id){ return document.getElementById(id); }
 
@@ -642,10 +967,20 @@ document.querySelectorAll("#dir div").forEach(el => el.onclick = () => {
   document.querySelectorAll("#dir div").forEach(d => d.classList.remove("on"));
   el.classList.add("on"); state.dir = el.dataset.d;
 });
+// ---- order ----
+document.querySelectorAll("#order div").forEach(el => el.onclick = () => {
+  document.querySelectorAll("#order div").forEach(d => d.classList.remove("on"));
+  el.classList.add("on"); state.order = el.dataset.o;
+});
 // ---- redact ----
 $("redact").onclick = () => {
   state.redact = !state.redact;
   $("redact").classList.toggle("on", state.redact);
+};
+// ---- google drive mirror ----
+$("mirror").onclick = () => {
+  state.mirror = !state.mirror;
+  $("mirror").classList.toggle("on", state.mirror);
 };
 
 function collect() {
@@ -656,6 +991,7 @@ function collect() {
     direction: state.dir, types,
     include: $("include").value, exclude: $("exclude").value,
     cap: $("cap").value, redact: state.redact,
+    order: state.order, dest: $("dest").value, mirror_drive: state.mirror,
   };
 }
 
@@ -711,9 +1047,19 @@ $("save").onclick = () => {
     const res = $("result");
     if (d.ok) {
       res.className = "result ok";
-      res.innerHTML = `✅ Saved <b>${d.count.toLocaleString()}</b> messages (${d.first} → ${d.last}).`
-        + `<br><br><code>${esc(d.folder)}</code>`
-        + `<br><br>The folder just opened in Finder. Upload <code>messages.json</code> to Claude.`;
+      const att = d.attachments_saved ? ` · <b>${d.attachments_saved.toLocaleString()}</b> attachments` : "";
+      const miss = d.attachments_missing ? ` (${d.attachments_missing} not downloaded from iCloud)` : "";
+      let where = `<br><br>Local: <code>${esc(d.folder)}</code>`;
+      if (d.drive_folder) where += `<br>Google Drive: <code>${esc(d.drive_folder)}</code>`;
+      let vr = "";
+      if (d.attachments_saved) {
+        vr = `<br><br>Verified — local ${d.in_local}/${d.attachments_saved}`
+           + (d.drive_folder ? `, Drive ${d.in_drive}/${d.attachments_saved}` : "")
+           + (d.missing_drive ? ` ⚠️ ${d.missing_drive} not yet on Drive` : " ✅");
+      }
+      res.innerHTML = `✅ Saved <b>${d.count.toLocaleString()}</b> messages${att}${miss} (${d.first} → ${d.last}).`
+        + where + vr
+        + `<br><br>Open <code>conversation.html</code> to read it with photos & videos inline (toggle newest/oldest at the top). See <code>VERIFY_REPORT.md</code> for the per-place check.`;
     } else { res.className = "result err"; res.innerHTML = "⚠️ " + esc(d.error || "Failed."); }
     res.scrollIntoView({behavior:"smooth"});
   }).catch(e => { btn.disabled=false; btn.textContent="Save export"; showErr(e); });
@@ -742,7 +1088,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/" or self.path.startswith("/index"):
-            self._send(200, PAGE, "text/html; charset=utf-8")
+            page = PAGE.replace("__DEFAULT_DEST__", _h(default_dest()))
+            page = page.replace(
+                "__DRIVE_DEST__",
+                _h(drive_picks_base() or "not detected — will save locally only"))
+            self._send(200, page, "text/html; charset=utf-8")
         elif self.path == "/api/people":
             try:
                 self._send(200, json.dumps(list_people()))
@@ -755,7 +1105,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             payload = self._read_json()
             if self.path == "/api/preview":
-                records = gather(payload)
+                records = apply_order(gather(payload), payload.get("order", "oldest"))
                 shown = records[:PREVIEW_LIMIT]
                 self._send(200, json.dumps({
                     "ok": True, "total": len(records), "records": shown,
