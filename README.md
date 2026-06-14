@@ -202,6 +202,33 @@ incremental (only new attachments are copied).
 
 ---
 
+## Browse conversations with photos inline (the picker)
+
+Prefer to grab specific people and *read* the thread with media in place? Use the
+browser picker:
+
+```bash
+python3 imessage_picker.py     # opens in your browser
+```
+
+- **Search & pick people** (the controls you already know), choose a date range,
+  preview, and trim before saving.
+- Turn on **📎 Photos / videos / files** to copy the **real attachments** into the
+  export and show them **inline in the conversation** — images render, videos and
+  audio play, right where they were sent.
+- **Order toggle:** oldest-first or newest-first — set it before saving *and* flip
+  it live in the saved `conversation.html`.
+- **Where to save:** defaults to **Google Drive** (if Google Drive for desktop is
+  installed) or your **Downloads** folder otherwise — editable in the UI.
+- Attachment filenames lead with the **date/time and the people in the chat**,
+  e.g. `2024-01-15_0932_Mom_IMG_1234.HEIC`. Originals are preserved; HEIC photos
+  also get a JPG copy so they display in any browser.
+
+Each saved export folder contains `conversation.html` (read it here),
+`conversation.md`, `messages.json`, `messages.csv`, and an `attachments/` folder.
+
+---
+
 ## Windows Setup (iPhone)
 
 ### Requirements

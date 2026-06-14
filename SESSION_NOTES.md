@@ -9,6 +9,65 @@ This file contains a complete history of Claude Code sessions for this repositor
 
 ---
 
+## 2026-06-14 — Picker: inline media, date/time ordering, Google Drive
+
+### What We Built
+Extended the browser **picker** (the per-person search flow Chris likes) so its
+exports show the **real photos/videos inline in the conversation**, are
+**date/time ordered with a live newest↔oldest toggle**, and save to **Google
+Drive** (or the computer). Builds on the same-day attachment archiver below.
+
+### Technical Details
+- **Inline media transcript:** new `conversation.html` per export renders each
+  message in datetime order with its attachments in place — `<img>` for photos,
+  `<video>`/`<audio>` players, links for other files. A sticky **Order** button
+  flips newest/oldest instantly (client-side; default set from the UI).
+- **Real attachments copied:** `attachments_for()` now returns each attachment's
+  on-disk `filename`; `make_record()` carries a rich `attachments` list plus a
+  clean `text_plain` (message text without the `[photo]` labels). `export_records`
+  copies each picked message's files into `<export>/attachments/` via
+  `shutil.copy2` (originals preserved); HEIC/TIFF also get a `sips` JPG copy for
+  in-browser display (best-effort, falls back to the original).
+- **Filename convention:** `YYYY-MM-DD_HHMM_<People>_<original>` — date/time first,
+  then the people in the chat (e.g. `2024-01-15_0932_Mom_IMG_1234.HEIC`). Applied
+  to the bulk archiver too.
+- **Destination:** auto-detects Google Drive for desktop (`default_dest()` reuses
+  `imessage_attachments.find_google_drive_dir()`); editable "Where to save" field
+  in the UI, injected into the page server-side. Falls back to
+  `~/Downloads/Desmond_Message_Picks` with drag-to-Drive instructions.
+- **UI:** relabeled the attachments content-toggle to "📎 Photos / videos / files"
+  (now controls real file copying + inline display), added an Order segment and a
+  destination card; `collect()` sends `order` + `dest`; preview honors order;
+  success message points at `conversation.html`.
+- **Missing/offloaded** attachments are flagged inline ("not downloaded from
+  iCloud") and counted, same safety story as the archiver.
+
+### Current Status
+- ✅ Compiles; `test_imessage_picker.py` (17 checks) + `test_imessage_attachments.py`
+  (14 checks) all pass. UI wiring verified (placeholder/order/dest/toggle present).
+- ✅ Committed/pushed to `claude/nifty-cori-60alcq`.
+- 🚧 Not yet run against a real `chat.db` / real HEIC+MOV in a real browser — first
+  run on Chris's Mac (esp. confirm HEIC→JPG via `sips` and video playback).
+
+### Decisions Made
+- HTML transcript (not just markdown) so photos/videos render and the sort toggle
+  is interactive. Reused the archiver's Drive + filename helpers (DRY).
+- Keep originals always; generate JPG only for HEIC/TIFF display.
+- Destination handled as "Google Drive if present, else Downloads + manual upload"
+  per Chris — no API/OAuth, preserves the no-network design.
+
+### Next Steps
+1. On the Mac: `python3 imessage_picker.py`, pick a person with photos, save, open
+   `conversation.html`, confirm images/videos show and the order toggle works.
+2. Confirm `sips` HEIC→JPG conversion works (it's macOS built-in) and MOV plays.
+3. Optional: same inline-media HTML view for the full bulk archive.
+
+### Questions/Blockers
+- Real-Mac/browser verification pending (no Messages DB, HEIC, or `sips` here).
+
+---
+
+
 ## 2026-06-14 — Attachment Archiver (real photos/videos → Google Drive)
 
 ### What We Built

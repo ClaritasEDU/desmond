@@ -284,7 +284,8 @@ def archive_attachments(
         time_str = dt.strftime("%H:%M:%S") if dt else ""
 
         original = transfer_name or os.path.basename(src) or f"attachment_{att_id}"
-        target_name = safe_name_keep_ext(f"{when}_{original}")
+        # Date/time stamp FIRST, then the people in the chat, then the original name.
+        target_name = safe_name_keep_ext(f"{when}_{conv_clean[:40]}_{original}")
 
         # Resolve message text for context.
         msg_text = text or decode_attributed_body(attributed) or ""
