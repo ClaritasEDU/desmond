@@ -9,6 +9,48 @@ This file contains a complete history of Claude Code sessions for this repositor
 
 ---
 
+## 2026-06-14 — Message text export now lives local + Google Drive
+
+### What We Built
+Per Chris: "the actual messages [should] live both local and on the gdrive." The
+text exporter (`imessage_exporter.py`) previously wrote only to
+`~/Downloads/iMessages_Export/`; it now ALSO copies the whole export into Google
+Drive so the message archive exists in both places.
+
+### Technical Details
+- New `mirror_to_drive(src_dir, drive_dir=None)`: after a normal export it
+  `shutil.copytree(..., dirs_exist_ok=True)` the local output into
+  `<GoogleDrive>/Desmond_Messages_Export/`. Local copy is always kept.
+- `find_google_drive_dir()` duplicated into the exporter (small, stdlib) to avoid
+  a circular import with `imessage_attachments` (which imports the exporter).
+- `main()` calls it automatically after exports; `--no-drive` skips it, `--drive
+  PATH` overrides the destination. No new dependencies.
+- Attachments intentionally stay Drive-primary (duplicating that volume locally
+  would defeat the phone-space goal); only the small text export is duplicated.
+
+### Current Status
+- ✅ Compiles; new `test_imessage_exporter.py` (7 checks: mirrors top-level +
+  nested files, keeps local copy, re-mirror updates, no-Drive→None) all pass.
+  Full suite now 45 checks across 3 files, all green.
+- ✅ Committed/pushed to `claude/nifty-cori-60alcq`.
+- 🚧 Not yet run on a real Mac/Drive (none in this container).
+
+### Decisions Made
+- Mirror-after-export (copytree) rather than dual-writing inside every export
+  function — minimal, robust, and idempotent across runs.
+- Duplicated the ~12-line Drive-detector instead of risking a circular import.
+
+### Next Steps
+1. On the Mac: `python3 imessage_exporter.py --full` → confirm the export appears
+   both locally and in `Google Drive/Desmond_Messages_Export/`.
+2. Then back up media with `imessage_attachments.py --full` (auto-verifies).
+
+### Questions/Blockers
+- None new. Real-Mac/Drive run still pending.
+
+---
+
+
 ## 2026-06-14 — Backup verification (+ cumulative-manifest fix)
 
 ### What We Built

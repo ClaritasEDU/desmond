@@ -14,7 +14,9 @@ Google Drive-ready.
 ## What's Working
 - **iMessage exporter** (`imessage_exporter.py`) — full + incremental text exports
   to JSON/CSV/markdown, contact name lookup, reactions, attachments (as labels),
-  effects.
+  effects. **NEW:** saves locally **and** copies to Google Drive
+  (`Desmond_Messages_Export/`) so the text archive lives in both places
+  (`--no-drive` / `--drive PATH` to control).
 - **Browser message picker** (`imessage_picker.py`) — pick/search people, choose a
   range, preview, trim, redact. **NEW:** copies the **real photos/videos/files**
   and renders them **inline** in a `conversation.html` transcript with a live
@@ -72,5 +74,6 @@ Google Drive-ready.
   upgraded the **picker** to copy real attachments + render them **inline** with a
   **newest/oldest** toggle and date/time+people filenames, and added **backup
   verification** (`--verify`/`desmond_verify.sh`) that confirms everything reached
-  the Drive archive. Fixed a cumulative-manifest bug. Two test suites (38 checks
-  total, all passing); docs updated.
+  the Drive archive, and made the **text export live local + Google Drive**. Fixed
+  a cumulative-manifest bug. Three test suites (45 checks total, all passing);
+  docs updated.

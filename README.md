@@ -134,6 +134,11 @@ Desmond will click Sync Now every 15 seconds and show your progress:
 python3 imessage_exporter.py --full
 ```
 
+Your messages are saved **locally** *and* automatically copied to **Google Drive**
+(into `Desmond_Messages_Export/`) if Google Drive for desktop is installed — so the
+text archive lives in both places. Use `--no-drive` to skip the Drive copy, or
+`--drive "/path/to/My Drive/Messages"` to choose where it goes.
+
 ### 4. Automatic Exports (optional)
 
 To run exports hourly in the background:
