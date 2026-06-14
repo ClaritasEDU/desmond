@@ -37,6 +37,7 @@ from urllib.parse import quote
 
 import imessage_picker as pick
 import imessage_attachments as attach
+import desmond_log as dlog
 
 ARCHIVE_NAME = "Desmond_Message_Archive"
 
@@ -58,29 +59,49 @@ INDEX_TEMPLATE = r"""<!DOCTYPE html>
  a.row:hover{border-color:#4f8cff;background:#161a22;}
  .nm{flex:1;font-weight:600;} .ct{color:#9aa3b2;font-size:12.5px;white-space:nowrap;text-align:right;}
  .miss{color:#d6a;}
+ button{background:#22304a;color:#fff;border:1px solid #4f8cff;border-radius:8px;padding:8px 12px;font-size:13.5px;cursor:pointer;margin:6px 0;}
 </style></head><body><div class="wrap">
 <h1>📲 Message Archive</h1>
 <p class="sub">__TOTALS__</p>
 <input id="q" placeholder="Search conversations…" autocomplete="off">
 <div id="list"></div>
+<button id="more">Show more</button>
+<p class="sub" id="count"></p>
 </div>
 <script>
 const ROWS = __ROWS__;
+const PAGE = 100;                 // default to 100 so a huge list won't choke
+let filtered = [], shown = 0;
 function esc(s){return (s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));}
-function render(q){
-  q=(q||"").toLowerCase();
-  const L=document.getElementById("list"); L.innerHTML="";
-  ROWS.filter(r=>r.name.toLowerCase().includes(q)).forEach(r=>{
-    const a=document.createElement("a"); a.className="row"; a.href=r.href;
-    const miss=r.missing?` · <span class="miss">${r.missing.toLocaleString()} offloaded</span>`:"";
-    a.innerHTML=`<span class="nm">${esc(r.name)}</span>`
-      +`<span class="ct">${r.count.toLocaleString()} msgs · ${r.attachments.toLocaleString()} media${miss}<br>${r.first} → ${r.last}</span>`;
-    L.appendChild(a);
-  });
-  if(!L.children.length) L.innerHTML='<p class="sub">No matches.</p>';
+function rowEl(r){
+  const a=document.createElement("a"); a.className="row"; a.href=r.href;
+  const miss=r.missing?` · <span class="miss">${r.missing.toLocaleString()} offloaded</span>`:"";
+  a.innerHTML=`<span class="nm">${esc(r.name)}</span>`
+    +`<span class="ct">${r.count.toLocaleString()} msgs · ${r.attachments.toLocaleString()} media${miss}<br>${r.first} → ${r.last}</span>`;
+  return a;
 }
-document.getElementById("q").oninput=e=>render(e.target.value);
-render("");
+function appendPage(){
+  const L=document.getElementById("list");
+  const end=Math.min(shown+PAGE, filtered.length);
+  for(let i=shown;i<end;i++) L.appendChild(rowEl(filtered[i]));
+  shown=end; update();
+}
+function update(){
+  const rem=filtered.length-shown, more=document.getElementById("more");
+  more.style.display = rem>0 ? "" : "none";
+  if(rem>0) more.textContent="Show next "+Math.min(PAGE,rem);
+  document.getElementById("count").textContent =
+    filtered.length ? ("showing "+shown.toLocaleString()+" of "+filtered.length.toLocaleString()+" conversations") : "";
+}
+function apply(q){
+  q=(q||"").toLowerCase();
+  filtered=ROWS.filter(r=>r.name.toLowerCase().includes(q));
+  document.getElementById("list").innerHTML=""; shown=0; appendPage();
+  if(!filtered.length){ document.getElementById("list").innerHTML='<p class="sub">No matches.</p>'; }
+}
+document.getElementById("q").oninput=e=>apply(e.target.value);
+document.getElementById("more").onclick=()=>appendPage();
+apply("");
 </script></body></html>"""
 
 
@@ -183,16 +204,23 @@ def build_archive(db_path, output_dir, order="oldest", photos_videos=False, verb
 
 
 def run_once(db_path, output_dir, order, photos_videos, expect_drive, drive_override,
-             do_verify=True):
-    build_archive(db_path, output_dir, order=order, photos_videos=photos_videos)
+             do_verify=True, logger=None):
+    stats = build_archive(db_path, output_dir, order=order, photos_videos=photos_videos)
+    if logger:
+        logger.metric(conversations=stats["conversations"], messages=stats["messages"],
+                      attachments=stats["attachments"], offloaded=stats["offloaded"])
 
     drive_folder = None
     if expect_drive:
         base = drive_override or attach.find_google_drive_dir()
+        if logger:
+            logger.log("info", "google drive detection", drive_detected=bool(base))
         if base:
             drive_folder = os.path.join(base, ARCHIVE_NAME)
             print(f"\nMirroring to Google Drive: {drive_folder}")
-            attach.mirror_tree(output_dir, drive_folder)
+            n = attach.mirror_tree(output_dir, drive_folder)
+            if logger:
+                logger.metric(mirrored_files=n)
         else:
             print("\n(No Google Drive detected — saved locally only. Install Google "
                   "Drive for desktop or pass --drive PATH.)")
@@ -202,6 +230,12 @@ def run_once(db_path, output_dir, order, photos_videos, expect_drive, drive_over
     print("\nVerifying (device vs local vs Google Drive)…")
     res = attach.verify_archive(db_path=db_path, output_dir=output_dir,
                                 drive_mirror=drive_folder, expect_drive=expect_drive)
+    if logger and isinstance(res, dict):
+        logger.metric(verify_complete=res.get("complete"),
+                      in_local=res.get("in_local"), in_drive=res.get("in_drive"),
+                      verify_offloaded=res.get("offloaded"),
+                      missing_local=res.get("missing_local"),
+                      missing_drive=res.get("missing_drive"))
     # Make sure the freshly written report is on Drive too.
     if drive_folder:
         for fn in ("VERIFY_REPORT.md", "verify_diff.json", "index.html"):
@@ -247,13 +281,25 @@ def main():
     expect_drive = not args.no_drive
 
     try:
+        logger = dlog.RunLogger("desmond_export")
+        logger.log("info", "args", order=order, photos_videos=args.photos_videos,
+                   to_drive=expect_drive, dest=output_dir,
+                   drive=(drive_override or ""), retry=args.retry)
+    except Exception:
+        logger = None
+
+    status = "ok"
+    done = False
+    try:
         if args.retry is not None:
             attempts = max(1, args.retry)
             res = None
             for i in range(attempts):
                 print(f"\n===== Attempt {i + 1} of {attempts} =====")
+                if logger:
+                    logger.log("info", "attempt", n=i + 1, of=attempts)
                 res = run_once(args.db, output_dir, order, args.photos_videos,
-                               expect_drive, drive_override, do_verify=True)
+                               expect_drive, drive_override, do_verify=True, logger=logger)
                 if res and res.get("complete"):
                     print(f"\n✅ Archive complete after {i + 1} pass(es).")
                     break
@@ -263,21 +309,30 @@ def main():
             done = bool(res and res.get("complete"))
         else:
             res = run_once(args.db, output_dir, order, args.photos_videos,
-                           expect_drive, drive_override, do_verify=not args.no_verify)
+                           expect_drive, drive_override, do_verify=not args.no_verify,
+                           logger=logger)
             done = (res is None) or bool(res.get("complete"))
-
-        try:
-            subprocess.run(["open", os.path.join(output_dir, "index.html")], check=False)
-        except Exception:
-            pass
-        sys.exit(0 if done else 1)
     except Exception as e:
+        status = "error"
         print(f"Error: {e}")
         import traceback
         traceback.print_exc()
         print("\nIf this is a permissions error: give Terminal Full Disk Access "
               "(System Settings → Privacy & Security), then restart Terminal.")
-        sys.exit(1)
+        if logger:
+            logger.exception("fatal error")
+
+    if logger:
+        log_path = logger.close(status=status, output_dir=output_dir, complete=done)
+        print(f"\n📝 Run log (safe to share — counts/env/errors only, no message "
+              f"text or names): {log_path}")
+
+    if status == "ok":
+        try:
+            subprocess.run(["open", os.path.join(output_dir, "index.html")], check=False)
+        except Exception:
+            pass
+    sys.exit(0 if (done and status == "ok") else 1)
 
 
 if __name__ == "__main__":

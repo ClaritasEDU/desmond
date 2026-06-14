@@ -9,6 +9,94 @@ This file contains a complete history of Claude Code sessions for this repositor
 
 ---
 
+## 2026-06-14 — Branch divergence fix + shareable run logs
+
+### What We Did
+1. **Fixed the branch** ("1 ahead, 1 behind"): PR #3 had merged this branch into
+   `main` (through `aeb2561`); our newest commit then sat on top, and `main`'s
+   merge commit wasn't on the branch. Rebased our one extra commit onto the
+   updated `origin/main` and force-pushed (`--force-with-lease`). Now **0 behind /
+   1 ahead**, local == remote.
+2. **Added run logging** the user can share to refine the product.
+
+### Technical Details
+- New `desmond_log.py` — `RunLogger` writes a `.log` (human) + `.json` (structured)
+  to `~/Downloads/Desmond_Logs/`. Captures environment (python/platform), CLI args,
+  per-phase timings, metrics (conversations/messages/attachments/offloaded, verify
+  counts), and full tracebacks on error. **PII-safe:** `sanitize()` redacts the
+  home path → `~`, `GoogleDrive-<account>`, and email addresses; logs never include
+  message text or contact names.
+- Wired into `desmond_export.py`: `main()` opens a logger, logs args, runs
+  build→mirror→verify (each a logged phase/metric via `run_once(logger=...)`),
+  records fatal errors, and prints the log path at the end. Logging failures never
+  break the export (guarded).
+- Verified end-to-end: ran the one command against a synthetic DB → archive +
+  verify + a clean JSON log with metrics and zero errors.
+
+### Current Status
+- ✅ Branch corrected and pushed. ✅ All five suites pass — archiver 29, picker 24,
+  exporter 7, unified 19, log 10 → **89 total**.
+- ✅ Committed/pushed to `claude/nifty-cori-60alcq` (1 ahead of main, clean).
+- 🚧 Real Mac/Drive/browser run still pending.
+
+### Decisions Made
+- Rebase (not merge) the single extra commit → clean "1 ahead, 0 behind" for the
+  next PR; `--force-with-lease` since local == remote and no open PR.
+- Logs live in `~/Downloads/Desmond_Logs/` (outside the archive, accumulate across
+  runs, easy to find/share) and are PII-safe by construction.
+
+### Next Steps
+1. On the Mac: run `python3 desmond_export.py`, then send me the newest
+   `~/Downloads/Desmond_Logs/desmond_export_*.json` to refine behavior.
+2. (Optional) open a PR for the remaining commit when ready.
+
+### Questions/Blockers
+- None new.
+
+---
+
+
+## 2026-06-14 — One thing to run + pagination (100/page)
+
+### What We Built
+Per Chris ("one thing to run. make it happen." + "do pagination … defaulting to
+showing 100 items"): made `desmond_export.py` THE path and added pagination so
+big threads don't crash the browser.
+
+### Technical Details
+- **One command everywhere:** the web setup guide (`index.html`) macOS step 4 now
+  shows `python3 desmond_export.py` as the single command (text + media inline,
+  local + Drive, verified); README leads with a ⭐ "one command" section right
+  after Quick Start; Files Reference lists `desmond_export.py`/`.sh` first. The
+  three building-block scripts remain but are clearly secondary.
+- **Pagination (default 100):** the shared transcript renderer
+  (`pick.render_html`) now renders 100 messages per page with "Show next 100" /
+  "Show all", preserving person/day headers and the newest/oldest toggle (toggle
+  resets to page 1). The unified archive's `index.html` conversation list paginates
+  the same way (100, "Show more", search resets). This is what keeps a
+  hundreds-of-thousands-message history openable.
+
+### Current Status
+- ✅ All four suites pass — archiver 29, picker 24, exporter 7, unified 16 →
+  **76 total** (added pagination assertions). Compiles clean.
+- ✅ Committed/pushed to `claude/nifty-cori-60alcq`.
+- 🚧 Real Mac/Drive/browser run still pending.
+
+### Decisions Made
+- Paginate in the renderer (one place) so the picker and the unified exporter both
+  benefit. Flat, date-ordered pagination with inline headers handles single- and
+  multi-person transcripts.
+
+### Next Steps
+1. On the Mac: `python3 desmond_export.py`, open `index.html`, page through a big
+   thread, confirm media inline + ✅ verify in local + Drive.
+
+### Questions/Blockers
+- Real-Mac/Drive/browser run pending.
+
+---
+
+
 ## 2026-06-14 — Single unified exporter (text + media inline, one command)
 
 ### What We Built
