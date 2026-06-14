@@ -256,14 +256,17 @@ python3 imessage_picker.py     # opens in your browser
   audio play, right where they were sent.
 - **Order toggle:** oldest-first or newest-first — set it before saving *and* flip
   it live in the saved `conversation.html`.
-- **Where to save:** defaults to **Google Drive** (if Google Drive for desktop is
-  installed) or your **Downloads** folder otherwise — editable in the UI.
+- **Lives in both places:** each pick is saved to a **local** folder and mirrored
+  to **Google Drive** (toggle "☁︎ Also copy to Google Drive" in the UI). After
+  saving it's **verified** — the UI shows `local N/N, Drive N/N` and writes a
+  `VERIFY_REPORT.md` into the export.
 - Attachment filenames lead with the **date/time and the people in the chat**,
   e.g. `2024-01-15_0932_Mom_IMG_1234.HEIC`. Originals are preserved; HEIC photos
   also get a JPG copy so they display in any browser.
 
 Each saved export folder contains `conversation.html` (read it here),
-`conversation.md`, `messages.json`, `messages.csv`, and an `attachments/` folder.
+`conversation.md`, `messages.json`, `messages.csv`, `VERIFY_REPORT.md`, and an
+`attachments/` folder — in both the local copy and the Google Drive mirror.
 
 ---
 

@@ -18,10 +18,11 @@ Google Drive-ready.
   (`Desmond_Messages_Export/`) so the text archive lives in both places
   (`--no-drive` / `--drive PATH` to control).
 - **Browser message picker** (`imessage_picker.py`) — pick/search people, choose a
-  range, preview, trim, redact. **NEW:** copies the **real photos/videos/files**
-  and renders them **inline** in a `conversation.html` transcript with a live
-  **newest/oldest** order toggle; saves to **Google Drive** (auto-detected) or
-  Downloads; attachment filenames lead with date/time + the people in the chat.
+  range, preview, trim, redact. Copies the **real photos/videos/files** and renders
+  them **inline** in a `conversation.html` transcript with a live **newest/oldest**
+  order toggle; filenames lead with date/time + the people in the chat. **NEW:**
+  each pick is saved **locally and mirrored to Google Drive**, then **verified**
+  (UI shows `local N/N, Drive N/N`) with a per-export `VERIFY_REPORT.md`.
 - **NEW: Attachment archiver** (`imessage_attachments.py` + `desmond_attachments.sh`)
   — copies the **real** photos/videos/audio/files out of Messages into an
   organized, browsable archive that lives in **both** places: a **local** primary
@@ -46,9 +47,10 @@ Google Drive-ready.
   Drive/local tamper, retry-restore, report contents) but **not yet run against a
   real `~/Library/Messages/chat.db`** or a real Google Drive folder (none in the
   Linux container). First real run + verify must happen on Chris's Mac.
-- **Picker inline media** — validated by `test_imessage_picker.py` (17 checks
-  pass); still needs a real-Mac/browser run to confirm HEIC→JPG via `sips`,
-  video playback, and the order toggle against a live DB.
+- **Picker inline media + Drive mirror/verify** — validated by
+  `test_imessage_picker.py` (23 checks pass); still needs a real-Mac/browser run to
+  confirm HEIC→JPG via `sips`, video playback, the order toggle, and the Drive
+  mirror against a live DB.
 
 ## Tech Stack
 - Python 3 (stdlib only — sqlite3, shutil, http.server). No external dependencies.
@@ -77,5 +79,6 @@ Google Drive-ready.
   the Drive archive, made the **text export live local + Google Drive**, made
   **attachments live local + Drive** too, and added **three-way verification**
   (device vs local vs Drive) with a **diff report** (`VERIFY_REPORT.md`) and a
-  **`--retry`** loop to drive to a full archive. Three test suites (53 checks
-  total, all passing); docs updated.
+  **`--retry`** loop to drive to a full archive, and gave the **picker** the same
+  local + Drive + verify treatment. Three test suites (59 checks total, all
+  passing); docs updated.

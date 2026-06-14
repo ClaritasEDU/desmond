@@ -37,15 +37,18 @@ MESSAGES_DB = os.path.expanduser("~/Library/Messages/chat.db")
 
 
 def default_dest():
-    """Default save location: a detected Google Drive folder, else ~/Downloads.
+    """Local primary save location for picks (~/Downloads/Desmond_Message_Picks).
+    Each export is also mirrored to Google Drive when available, so a pick lives
+    in BOTH places. The local copy is always kept."""
+    return os.path.expanduser("~/Downloads/Desmond_Message_Picks")
 
-    Either way the picks land in a clearly named folder. With Google Drive for
-    desktop installed, that folder auto-uploads; otherwise drag it to
-    drive.google.com to upload manually.
-    """
-    drive = attach.find_google_drive_dir()
-    base = drive if drive else os.path.expanduser("~/Downloads")
-    return os.path.join(base, "Desmond_Message_Picks")
+
+def drive_picks_base(override=None):
+    """The Google Drive folder picks are mirrored into, or None if no Drive."""
+    if override:
+        return os.path.expanduser(override)
+    gd = attach.find_google_drive_dir()
+    return os.path.join(gd, "Desmond_Message_Picks") if gd else None
 
 
 OUTPUT_DIR = default_dest()
@@ -633,14 +636,92 @@ def export_records(records, people, f):
                 m["path"] for m in media_by_id[r["id"]] if not m.get("missing"))
             writer.writerow(row)
 
+    # 5. Mirror the whole export to Google Drive (so picks live local + Drive).
+    drive_folder = None
+    if f.get("mirror_drive", True):
+        drive_base = drive_picks_base(f.get("drive"))
+        if drive_base:
+            drive_folder = os.path.join(drive_base, os.path.basename(folder))
+            attach.mirror_tree(folder, drive_folder)
+
+    # 6. Verify the pick is present in both places; write a per-export report.
+    saved_media = [(r, m) for r in records for m in media_by_id[r["id"]]
+                   if not m.get("missing") and m.get("path")]
+    in_local = sum(1 for _r, m in saved_media
+                   if os.path.exists(os.path.join(folder, m["path"])))
+    in_drive = 0
+    missing_drive = []
+    if drive_folder:
+        for _r, m in saved_media:
+            if os.path.exists(os.path.join(drive_folder, m["path"])):
+                in_drive += 1
+            else:
+                missing_drive.append((_r, m))
+    write_pick_report(folder, drive_folder, people, summary, att_saved, att_missing,
+                      in_local, in_drive, saved_media, missing_drive)
+
     try:
         subprocess.run(["open", folder], check=False)
     except Exception:
         pass
 
     return {"ok": True, "count": len(records), "folder": folder,
+            "drive_folder": drive_folder,
             "first": first_date, "last": last_date,
-            "attachments_saved": att_saved, "attachments_missing": att_missing}
+            "attachments_saved": att_saved, "attachments_missing": att_missing,
+            "in_local": in_local, "in_drive": in_drive,
+            "missing_drive": len(missing_drive)}
+
+
+def write_pick_report(folder, drive_folder, people, summary, att_saved, att_missing,
+                      in_local, in_drive, saved_media, missing_drive):
+    """Per-export verification report: how many attachments in the local export
+    vs Google Drive, and the list of any that didn't mirror."""
+    missing_local = [(r, m) for r, m in saved_media
+                     if not os.path.exists(os.path.join(folder, m["path"]))]
+
+    def items(pairs):
+        return [{"person": r["person"], "date": r["date"],
+                 "name": m.get("name"), "path": m.get("path")} for r, m in pairs]
+
+    with open(os.path.join(folder, "verify_diff.json"), "w", encoding="utf-8") as jf:
+        json.dump({
+            "generated": datetime.now().isoformat(),
+            "people": people, "filters": summary,
+            "counts": {"attachments_saved": att_saved, "offloaded": att_missing,
+                       "in_local": in_local, "in_drive": in_drive,
+                       "drive_mirror": bool(drive_folder)},
+            "missing_local": items(missing_local),
+            "missing_drive": items(missing_drive),
+        }, jf, indent=2)
+
+    ok = (in_local == att_saved) and (not drive_folder or in_drive == att_saved)
+    verdict = ("✅ present in all places" if ok and not att_missing else
+               "✅ local + Drive complete; some offloaded in iCloud" if ok else
+               "⚠️ some attachments missing — re-export")
+    with open(os.path.join(folder, "VERIFY_REPORT.md"), "w", encoding="utf-8") as mf:
+        mf.write("# Pick Verification Report\n\n")
+        mf.write(f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M')}  \n")
+        mf.write(f"**People:** {', '.join(people)}  \n")
+        mf.write(f"**Filters:** {summary}\n\n")
+        mf.write("## Attachments per place\n\n| Place | Attachments |\n|---|---|\n")
+        mf.write(f"| Saved by this pick | {att_saved} "
+                 f"({att_missing} offloaded/not downloaded) |\n")
+        mf.write(f"| Local export | {in_local} / {att_saved} |\n")
+        drive_cell = f"{in_drive} / {att_saved}" if drive_folder else "not mirrored"
+        mf.write(f"| Google Drive | {drive_cell} |\n\n")
+        mf.write(f"**Verdict:** {verdict}\n")
+        if missing_drive:
+            mf.write(f"\n## Missing from Google Drive ({len(missing_drive)})\n\n")
+            for r, m in missing_drive[:500]:
+                mf.write(f"- {r['date']} · {r['person']} · {m.get('name')}\n")
+
+    if drive_folder:
+        for fn in ("VERIFY_REPORT.md", "verify_diff.json"):
+            try:
+                shutil.copy2(os.path.join(folder, fn), os.path.join(drive_folder, fn))
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -786,11 +867,13 @@ PAGE = r"""<!DOCTYPE html>
 
   <div class="card">
     <h2>4 · Where to save</h2>
+    <label class="lbl">Local folder (always kept)</label>
     <input type="text" id="dest" value="__DEFAULT_DEST__">
-    <div class="mut">Defaults to <b>Google Drive</b> if Google Drive for desktop
-      is installed (it then uploads automatically) — otherwise to your
-      <b>Downloads</b> folder, which you can drag to drive.google.com. Either way
-      the whole export, attachments included, lives in this one folder.</div>
+    <div class="tg on" id="mirror" style="text-align:center;margin-top:12px">☁︎ Also copy to Google Drive</div>
+    <div class="mut" style="margin-top:8px">Google Drive: <code>__DRIVE_DEST__</code></div>
+    <div class="mut">Saved locally first, then mirrored to Google Drive — so each
+      pick (attachments included) lives in <b>both</b> places. After saving, it's
+      verified and a <code>VERIFY_REPORT.md</code> is written.</div>
   </div>
 
   <div class="bar">
@@ -818,7 +901,7 @@ PAGE = r"""<!DOCTYPE html>
 </div>
 
 <script>
-const state = { people: new Set(), range: "7d", dir: "both", order: "oldest", redact: false, shown: [] };
+const state = { people: new Set(), range: "7d", dir: "both", order: "oldest", redact: false, mirror: true, shown: [] };
 
 function $(id){ return document.getElementById(id); }
 
@@ -893,6 +976,11 @@ $("redact").onclick = () => {
   state.redact = !state.redact;
   $("redact").classList.toggle("on", state.redact);
 };
+// ---- google drive mirror ----
+$("mirror").onclick = () => {
+  state.mirror = !state.mirror;
+  $("mirror").classList.toggle("on", state.mirror);
+};
 
 function collect() {
   const types = [...document.querySelectorAll("#types .tg.on")].map(t => t.dataset.t);
@@ -902,7 +990,7 @@ function collect() {
     direction: state.dir, types,
     include: $("include").value, exclude: $("exclude").value,
     cap: $("cap").value, redact: state.redact,
-    order: state.order, dest: $("dest").value,
+    order: state.order, dest: $("dest").value, mirror_drive: state.mirror,
   };
 }
 
@@ -960,10 +1048,17 @@ $("save").onclick = () => {
       res.className = "result ok";
       const att = d.attachments_saved ? ` · <b>${d.attachments_saved.toLocaleString()}</b> attachments` : "";
       const miss = d.attachments_missing ? ` (${d.attachments_missing} not downloaded from iCloud)` : "";
+      let where = `<br><br>Local: <code>${esc(d.folder)}</code>`;
+      if (d.drive_folder) where += `<br>Google Drive: <code>${esc(d.drive_folder)}</code>`;
+      let vr = "";
+      if (d.attachments_saved) {
+        vr = `<br><br>Verified — local ${d.in_local}/${d.attachments_saved}`
+           + (d.drive_folder ? `, Drive ${d.in_drive}/${d.attachments_saved}` : "")
+           + (d.missing_drive ? ` ⚠️ ${d.missing_drive} not yet on Drive` : " ✅");
+      }
       res.innerHTML = `✅ Saved <b>${d.count.toLocaleString()}</b> messages${att}${miss} (${d.first} → ${d.last}).`
-        + `<br><br><code>${esc(d.folder)}</code>`
-        + `<br><br>Open <code>conversation.html</code> to read it with photos & videos inline — toggle newest/oldest at the top. `
-        + `If Google Drive for desktop is on, it's uploading now; otherwise drag this folder to drive.google.com.`;
+        + where + vr
+        + `<br><br>Open <code>conversation.html</code> to read it with photos & videos inline (toggle newest/oldest at the top). See <code>VERIFY_REPORT.md</code> for the per-place check.`;
     } else { res.className = "result err"; res.innerHTML = "⚠️ " + esc(d.error || "Failed."); }
     res.scrollIntoView({behavior:"smooth"});
   }).catch(e => { btn.disabled=false; btn.textContent="Save export"; showErr(e); });
@@ -993,6 +1088,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/" or self.path.startswith("/index"):
             page = PAGE.replace("__DEFAULT_DEST__", _h(default_dest()))
+            page = page.replace(
+                "__DRIVE_DEST__",
+                _h(drive_picks_base() or "not detected — will save locally only"))
             self._send(200, page, "text/html; charset=utf-8")
         elif self.path == "/api/people":
             try:

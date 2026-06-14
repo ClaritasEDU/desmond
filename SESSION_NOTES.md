@@ -9,6 +9,52 @@ This file contains a complete history of Claude Code sessions for this repositor
 
 ---
 
+## 2026-06-14 — Picker: local + Drive mirror + per-export verify report
+
+### What We Built
+Per Chris ("yes to the picker"), the browser picker now matches the bulk archiver:
+every export is saved **locally and mirrored to Google Drive**, then **verified**,
+with a per-export report.
+
+### Technical Details
+- `export_records` now writes the export to a **local** primary folder
+  (`~/Downloads/Desmond_Message_Picks/<pick>`), then mirrors the whole folder to
+  `<Drive>/Desmond_Message_Picks/<pick>` via `attach.mirror_tree` (reuses the
+  archiver's incremental copier). `default_dest()` is now local; new
+  `drive_picks_base()`.
+- After mirroring, it verifies the pick's attachments exist in **both** the local
+  export and the Drive copy and writes `write_pick_report` →
+  `VERIFY_REPORT.md` + `verify_diff.json` (counts per place + any not-mirrored
+  list), copied into both folders. Result dict returns `drive_folder`, `in_local`,
+  `in_drive`, `missing_drive`.
+- UI: "Where to save" shows the **local folder** + a "☁︎ Also copy to Google
+  Drive" toggle (default on) + the detected Drive target (`__DRIVE_DEST__`
+  injected server-side). `collect()` sends `mirror_drive`; success message shows
+  both paths and the verify counts.
+
+### Current Status
+- ✅ Compiles; `test_imessage_picker.py` now **23 checks** (adds Drive mirror,
+  in_local/in_drive verify, report in both places). Archiver 29, exporter 7 →
+  **59 total**, all pass. Picker UI wiring verified.
+- ✅ Committed/pushed to `claude/nifty-cori-60alcq`.
+- 🚧 Not run on a real Mac/Drive/browser yet.
+
+### Decisions Made
+- Reused the archiver's `mirror_tree` (DRY) rather than a second copier.
+- Local = primary, Drive = mirror, consistent with the bulk tools.
+
+### Next Steps
+1. On the Mac: run `imessage_picker.py`, save a pick, confirm it appears locally
+   and in Google Drive and that the UI shows `local N/N, Drive N/N ✅`.
+2. Then the full backup (`imessage_exporter.py --full`, `imessage_attachments.py
+   --retry`).
+
+### Questions/Blockers
+- Real-Mac/Drive/browser run still pending.
+
+---
+
+
 ## 2026-06-14 — Attachments live local + Drive; three-way verify + report + retry
 
 ### What We Built

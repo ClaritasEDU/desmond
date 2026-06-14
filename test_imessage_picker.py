@@ -102,6 +102,24 @@ def main():
         check(os.path.exists(os.path.join(folder, "conversation.md")), "wrote conversation.md")
         check(os.path.exists(os.path.join(folder, "messages.csv")), "wrote messages.csv")
 
+        # Local + Google Drive mirror, then per-export verify.
+        f_drive = dict(f, dest=os.path.join(tmp, "local2"),
+                       drive=os.path.join(tmp, "GDrive"), mirror_drive=True)
+        res3 = picker.export_records(records, ["Mom"], f_drive)
+        check(res3["drive_folder"] is not None, "picker mirrors the export to Google Drive")
+        check(res3["in_local"] == 1 and res3["in_drive"] == 1,
+              f"picker verify: 1 local + 1 drive (got {res3['in_local']}/{res3['in_drive']})")
+        check(res3["missing_drive"] == 0, "nothing missing from Drive")
+        dfolder = res3["drive_folder"]
+        check(os.path.isdir(os.path.join(dfolder, "attachments")) and
+              len(os.listdir(os.path.join(dfolder, "attachments"))) == 1,
+              "attachment mirrored into Drive export/attachments")
+        check(os.path.exists(os.path.join(res3["folder"], "VERIFY_REPORT.md")) and
+              os.path.exists(os.path.join(dfolder, "VERIFY_REPORT.md")),
+              "VERIFY_REPORT.md written to both local and Drive")
+        check(os.path.exists(os.path.join(res3["folder"], "verify_diff.json")),
+              "verify_diff.json written")
+
         # Attachments OFF → no files copied.
         f_off = dict(f, types=["text"], dest=os.path.join(tmp, "drive2"))
         res2 = picker.export_records(records, ["Mom"], f_off)
