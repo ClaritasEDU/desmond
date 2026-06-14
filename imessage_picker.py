@@ -7,7 +7,9 @@ would be exported before anything is written to disk. Trim it down with
 content filters, keyword include/exclude, a message cap, redaction, and
 per-message deselection. Only what you approve gets saved.
 
-Output lands in ~/Downloads/iMessages_Export/_picks/.
+Output lands in your Google Drive folder (auto-detected) or ~/Downloads —
+each pick gets its own folder with conversation.html (photos/videos inline,
+newest/oldest toggle), conversation.md, messages.json/csv, and attachments/.
 
 Run with:  python3 imessage_picker.py
 Opens automatically in your browser. Nothing is uploaded anywhere.
