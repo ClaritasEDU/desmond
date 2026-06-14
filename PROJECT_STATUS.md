@@ -24,16 +24,16 @@ Google Drive-ready.
   Downloads; attachment filenames lead with date/time + the people in the chat.
 - **NEW: Attachment archiver** (`imessage_attachments.py` + `desmond_attachments.sh`)
   — copies the **real** photos/videos/audio/files out of Messages into an
-  organized, browsable archive (per-contact folders, `YYYY-MM-DD_HHMM_people_name`
-  filenames) with a **cumulative** JSON/CSV/Markdown manifest so you can find &
-  retrieve any file. Auto-detects a **Google Drive for desktop** folder (or use
-  `--dest`). Reads the DB read-only; incremental re-runs; `--dry-run` size preview;
-  `--photos-videos` filter; reports MISSING (iCloud-offloaded) files.
-- **NEW: Backup verification** (`imessage_attachments.py --verify` +
-  `desmond_verify.sh`) — reconciles Messages against the archive and prints a
-  ✅/⚠️ verdict: confirms the archive is **inside Google Drive**, that **every
-  downloadable attachment is present**, and what's still **offloaded in iCloud**.
-  Runs automatically at the end of a normal backup; exit code is scriptable.
+  organized, browsable archive that lives in **both** places: a **local** primary
+  copy **and** a **Google Drive** mirror (incremental `mirror_tree`). Per-contact
+  folders, `YYYY-MM-DD_HHMM_people_name` filenames, cumulative JSON/CSV/MD manifest.
+  Reads the DB read-only; incremental; `--dry-run` sizing; `--photos-videos`;
+  `--no-drive` / `--drive PATH`; `--retry [N]` loops until complete.
+- **NEW: Three-way verification + report** (`--verify` / `desmond_verify.sh`) —
+  reconciles **device (Messages) vs local vs Google Drive**, prints per-place
+  counts, and writes `VERIFY_REPORT.md` + `verify_diff.json` listing exactly
+  what's missing where (and what's offloaded in iCloud). Runs automatically after
+  a backup; `--retry` drives it to a full archive; exit code is scriptable.
 - **Windows (iPhone backup)** and **Android (SMS XML)** text exporters.
 - **Web setup guide** (`index.html`).
 
@@ -41,11 +41,11 @@ Google Drive-ready.
 - Nothing known broken.
 
 ## What's In Progress / Needs Real-Mac Verification
-- **Attachment archiver + verify** — logic validated by a synthetic-DB test
-  (`test_imessage_attachments.py`, 21 checks pass, incl. verify complete/tampered/
-  no-archive) but **not yet run against a real `~/Library/Messages/chat.db`** or a
-  real Google Drive folder (none in the Linux build container). First real run +
-  verify must happen on Chris's Mac.
+- **Attachment archiver + 3-way verify** — logic validated by a synthetic-DB test
+  (`test_imessage_attachments.py`, 29 checks pass, incl. mirror, three-way verify,
+  Drive/local tamper, retry-restore, report contents) but **not yet run against a
+  real `~/Library/Messages/chat.db`** or a real Google Drive folder (none in the
+  Linux container). First real run + verify must happen on Chris's Mac.
 - **Picker inline media** — validated by `test_imessage_picker.py` (17 checks
   pass); still needs a real-Mac/browser run to confirm HEIC→JPG via `sips`,
   video playback, and the order toggle against a live DB.
@@ -74,6 +74,8 @@ Google Drive-ready.
   upgraded the **picker** to copy real attachments + render them **inline** with a
   **newest/oldest** toggle and date/time+people filenames, and added **backup
   verification** (`--verify`/`desmond_verify.sh`) that confirms everything reached
-  the Drive archive, and made the **text export live local + Google Drive**. Fixed
-  a cumulative-manifest bug. Three test suites (45 checks total, all passing);
-  docs updated.
+  the Drive archive, made the **text export live local + Google Drive**, made
+  **attachments live local + Drive** too, and added **three-way verification**
+  (device vs local vs Drive) with a **diff report** (`VERIFY_REPORT.md`) and a
+  **`--retry`** loop to drive to a full archive. Three test suites (53 checks
+  total, all passing); docs updated.

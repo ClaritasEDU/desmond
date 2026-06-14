@@ -140,27 +140,61 @@ def main():
         check(not os.path.exists(out3) or not _all_files(out3),
               "dry-run creates no files")
 
-        # --- Verify: the full archive in `out` should be COMPLETE ---
-        v = att.verify_archive(db_path=db_path, output_dir=out, verbose=False)
-        check(v["complete"] is True, "verify reports complete archive")
+        # --- Verify (local only): the full archive in `out` should be COMPLETE ---
+        v = att.verify_archive(db_path=db_path, output_dir=out,
+                               expect_drive=False, verbose=False)
+        check(v["complete"] is True, "local verify reports complete archive")
         check(v["verified"] == 2, f"verify counts 2 archived (got {v['verified']})")
         check(v["offloaded"] == 1, f"verify counts 1 offloaded (got {v['offloaded']})")
         check(v["missing_from_archive"] == 0, "verify finds nothing missing")
 
-        # --- Verify after tampering: delete one archived file → INCOMPLETE ---
+        # --- Mirror to a (fake) Google Drive, then THREE-WAY verify ---
+        drive_root = os.path.join(tmp, "GoogleDrive")
+        dest = att.mirror_to_drive(out, drive_dir=drive_root)
+        check(dest == os.path.join(drive_root, att.ARCHIVE_FOLDER_NAME),
+              "mirror_to_drive copies into <Drive>/Desmond_Message_Attachments")
+        v3 = att.verify_archive(db_path=db_path, output_dir=out,
+                                drive_dir=drive_root, expect_drive=True, verbose=False)
+        check(v3["complete"] is True, "three-way verify complete (device+local+drive)")
+        check(v3["in_local"] == 2 and v3["in_drive"] == 2,
+              f"three-way counts 2 local + 2 drive (got {v3['in_local']}/{v3['in_drive']})")
+
+        # --- Report files written, with the diff lists ---
+        check(os.path.exists(os.path.join(out, "VERIFY_REPORT.md")), "wrote VERIFY_REPORT.md")
+        with open(os.path.join(out, "verify_diff.json")) as f:
+            diff = json.load(f)
+        check(len(diff["offloaded"]) == 1, "diff report lists the 1 offloaded item")
+        check(diff["counts"]["in_drive"] == 2, "diff report records Drive count")
+
+        # --- Delete from the DRIVE mirror → three-way INCOMPLETE ---
         with open(os.path.join(out, "attachments.json")) as f:
             man = json.load(f)
         a_copied = next(a for a in man["attachments"] if a.get("saved_path"))
+        os.remove(os.path.join(dest, a_copied["saved_path"]))
+        v4 = att.verify_archive(db_path=db_path, output_dir=out,
+                                drive_dir=drive_root, expect_drive=True, verbose=False)
+        check(v4["complete"] is False and v4["missing_drive"] == 1,
+              "three-way verify catches a file missing from Drive")
+
+        # --- Retry idempotence: a deleted LOCAL file is restored by a full re-run ---
         os.remove(os.path.join(out, a_copied["saved_path"]))
-        v2 = att.verify_archive(db_path=db_path, output_dir=out, verbose=False)
-        check(v2["complete"] is False, "verify catches a deleted/missing file")
-        check(v2["missing_from_archive"] == 1,
-              f"verify flags 1 missing after tamper (got {v2['missing_from_archive']})")
+        v5 = att.verify_archive(db_path=db_path, output_dir=out,
+                                expect_drive=False, verbose=False)
+        check(v5["complete"] is False, "verify catches a deleted local file")
+        att.archive_attachments(db_path=db_path, output_dir=out, full=True, verbose=False)
+        v6 = att.verify_archive(db_path=db_path, output_dir=out,
+                                expect_drive=False, verbose=False)
+        check(v6["complete"] is True, "re-running --full restores the missing file (retry)")
+
+        # --- mirror_tree is incremental (second pass copies nothing new) ---
+        again = att.mirror_tree(out, os.path.join(tmp, "GoogleDrive2"))
+        again2 = att.mirror_tree(out, os.path.join(tmp, "GoogleDrive2"))
+        check(again > 0 and again2 == 0, "mirror_tree skips already-copied files")
 
         # --- Verify with no archive present ---
-        v3 = att.verify_archive(db_path=db_path,
+        v7 = att.verify_archive(db_path=db_path,
                                 output_dir=os.path.join(tmp, "nope"), verbose=False)
-        check(v3["complete"] is False and v3.get("reason") == "no_manifest",
+        check(v7["complete"] is False and v7.get("reason") == "no_manifest",
               "verify reports when no archive exists yet")
 
     print()

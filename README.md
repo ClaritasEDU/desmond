@@ -150,92 +150,93 @@ chmod +x setup_imessage_exporter.sh
 
 ---
 
-## Archiving Photos & Videos (and Google Drive)
+## Archiving Photos & Videos (local + Google Drive)
 
 The exporters above save your message **text** and note when a photo/video was
 sent. To actually **keep the photos, videos, and files themselves**, use the
 attachment archiver. It copies the real media out of Messages into a browsable
-folder you can keep forever — ideal for dropping onto Google Drive.
+folder that lives in **both** places: a **local** copy *and* a **Google Drive**
+mirror.
 
-> Runs on your **Mac** (that's where Messages and the files live). To land it on
-> Google Drive, install **Google Drive for desktop** and point `--dest` at your
-> Drive folder — the Drive app uploads it automatically. Desmond auto-detects a
-> Drive folder if you have one.
+> Runs on your **Mac** (that's where Messages and the files live). It archives
+> locally first, then mirrors to **Google Drive** if Google Drive for desktop is
+> installed (auto-detected). The local copy is always kept.
 
 ```bash
 # 1. See how much space it will take first (copies nothing):
 python3 imessage_attachments.py --dry-run
 
-# 2. Archive everything (auto-detects Google Drive, else ~/Downloads):
+# 2. Back up everything: local copy + mirror to Google Drive + auto-verify
 python3 imessage_attachments.py --full
 
-# Only images & videos:
-python3 imessage_attachments.py --photos-videos
+# Keep going until local AND Drive are 100% complete (loops a few passes):
+python3 imessage_attachments.py --retry
 
-# Or send it straight to a specific Google Drive folder:
-python3 imessage_attachments.py --full --dest "/Users/you/Library/CloudStorage/GoogleDrive-…/My Drive/Messages"
+# Other options:
+python3 imessage_attachments.py --full --photos-videos   # images + videos only
+python3 imessage_attachments.py --full --no-drive         # local copy only
+python3 imessage_attachments.py --full --drive "/Users/you/Library/CloudStorage/GoogleDrive-…/My Drive"
 ```
 
 Or just double-click `desmond_attachments.sh`.
 
-**What you get:**
+**What you get (in both the local folder and Google Drive):**
 
 ```
 Desmond_Message_Attachments/
 ├── ATTACHMENTS_INDEX.md     # counts, total size, top conversations, what's missing
 ├── attachments.json         # manifest: every file → conversation, sender, date, text
 ├── attachments.csv          # same, for spreadsheets
+├── VERIFY_REPORT.md         # per-place counts + the exact diff (after --verify)
 ├── Mom/
-│   ├── 2024-01-15_0932_IMG_1234.HEIC
-│   └── 2024-03-02_1810_movie.MOV
+│   ├── 2024-01-15_0932_Mom_IMG_1234.HEIC
+│   └── 2024-03-02_1810_Mom_movie.MOV
 └── ...
 ```
 
-Files are named `YYYY-MM-DD_HHMM_originalname` so they sort by date and stay
-recognizable. To **find** something later, browse the per-contact folders or
-open `attachments.csv` and filter by person/date/type, then follow `saved_path`.
+Files are named `YYYY-MM-DD_HHMM_<people>_originalname` so they sort by date, name
+the people in the chat, and stay recognizable. To **find** something later, browse
+the per-contact folders or open `attachments.csv` and filter by person/date/type.
 
 **Reads Messages read-only — it never modifies or deletes anything.** Re-runs are
-incremental (only new attachments are copied).
+incremental, and the manifest is cumulative (history is never lost).
 
 > **⚠️ Before you delete anything from your phone to free up space:** if
 > "Messages in iCloud" with "Optimize Mac Storage" is on, some originals may be
-> offloaded and not on your Mac yet. The archiver lists these as **MISSING** in
-> `ATTACHMENTS_INDEX.md`. Re-download them (open the thread, turn off "Optimize
-> Mac Storage", or run `desmond.sh` to sync) and re-run until nothing is missing
-> — *then* it's safe to clear space on the phone.
+> offloaded and not on your Mac yet. Verify lists these as **offloaded**.
+> Re-download them (open the thread, turn off "Optimize Mac Storage", or run
+> `desmond.sh` to sync) and re-run until nothing is missing — *then* it's safe to
+> clear space on the phone.
 
 ---
 
-### Verify the backup actually made it to Google Drive
+### Verify: device vs local vs Google Drive
 
-After archiving, confirm nothing slipped through:
+Confirm every attachment exists in all **three** places — what Messages knows
+about (the device), the local archive, and Google Drive:
 
 ```bash
-python3 imessage_attachments.py --verify
+python3 imessage_attachments.py --verify      # or double-click desmond_verify.sh
 ```
 
-Or double-click `desmond_verify.sh`. It compares Messages against the archive and
-prints a clear verdict:
+It prints per-place counts and writes a **report** (`VERIFY_REPORT.md` +
+`verify_diff.json`) listing exactly what's missing where:
 
 ```
-✓ This folder is inside your Google Drive — it syncs to Drive.
-  Attachments in Messages:        12,431
-  Downloaded to this Mac:         12,419
-  ✓ Verified in the archive:      12,419
-  ⚠️  Offloaded in iCloud:         12  (download these, then re-run --full)
-  ✅ All 12,419 downloaded attachments are archived.
+ON THE DEVICE (Messages):  12,431 attachments — 12,419 downloaded, 12 offloaded in iCloud
+IN LOCAL ARCHIVE:          12,419 / 12,419  ✅
+ON GOOGLE DRIVE:           12,419 / 12,419  ✅
+✅ ALL 12,419 attachments are present in all three places.
 ```
 
-It checks three things: (1) the archive is **inside your Google Drive folder**,
-(2) **every downloadable attachment** is present (and not zero-sized), and (3)
-what's still **offloaded in iCloud** and needs downloading first. A normal backup
-run does this verification automatically at the end; `--verify` lets you re-check
-anytime. (Exit code is non-zero if anything's missing, so it's scriptable.)
+To close any gap, re-run the backup (it re-copies what's missing and re-mirrors),
+or use `--retry` to loop until complete. Items still **offloaded in iCloud** must
+be downloaded in Messages first. Exit code is non-zero until everything matches,
+so it's scriptable.
 
-> Files inside the Drive folder upload in the background — after a green verdict,
-> glance at the Google Drive app (or drive.google.com) to confirm the upload has
-> finished before you clear space on your phone.
+> Drive uploads in the background — after a green verdict, glance at the Google
+> Drive app (or drive.google.com) to confirm the upload finished before clearing
+> space on your phone.
 
 ---
 

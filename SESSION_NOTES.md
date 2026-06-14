@@ -9,6 +9,58 @@ This file contains a complete history of Claude Code sessions for this repositor
 
 ---
 
+## 2026-06-14 — Attachments live local + Drive; three-way verify + report + retry
+
+### What We Built
+Per Chris: attachments should live **both local and on Google Drive**, and at the
+end he wants to **diff device vs local vs Drive**, see **per-place counts + a list
+of the diff**, and **retry** until the archive is complete.
+
+### Technical Details
+- **Both places:** the attachment archiver's primary output is now **local**
+  (`~/Downloads/Desmond_Message_Attachments`); after archiving it **mirrors to
+  Google Drive** via `mirror_tree` (incremental: skips files already present with
+  the same size). New `mirror_to_drive`, `drive_archive_dir`, `default_local_dir`.
+  Mirroring *up* from the local copy avoids copying iCloud-offloaded stubs.
+  Flags: `--drive PATH`, `--no-drive`.
+- **Three-way verify:** `verify_archive` now reconciles **device (Messages DB) vs
+  local vs Drive**. Reports counts per place, the offloaded set, and what's missing
+  from local and/or Drive. `expect_drive` controls whether Drive is required.
+- **Report + diff:** `write_verify_report` writes `VERIFY_REPORT.md` (counts table,
+  verdict, and itemized lists: missing-from-local, missing-from-Drive, offloaded —
+  each `date · person · name (id)`) and `verify_diff.json` for tooling.
+- **Retry:** `--retry [N]` (default 3) loops back up → mirror → verify until local
+  & Drive are complete (or N passes). A full re-run is idempotent (copy skips
+  identical files), so it converges; offloaded items still need a manual iCloud
+  download. Exit code non-zero until complete.
+- Filenames already lead with date/time + people; verify report uses those.
+
+### Current Status
+- ✅ Compiles; `test_imessage_attachments.py` now **29 checks** (incl. mirror,
+  three-way complete, Drive-tamper, local-tamper+retry-restore, report contents,
+  incremental mirror). Picker (17) + exporter (7) still green. **53 total.**
+- ✅ Smoke-tested the verify output + VERIFY_REPORT.md rendering by hand.
+- ✅ Committed/pushed to `claude/nifty-cori-60alcq`.
+- 🚧 Still not run against a real Mac/chat.db/Drive — that's Chris's run.
+
+### Decisions Made
+- Local = primary, Drive = mirror (offload-safe + true "both places").
+- Verify is a local reconciliation against the Drive *folder*; cloud-upload-done
+  stays a human glance at the Drive app (no API/OAuth). Offered MCP spot-check.
+- Manifest stays cumulative (fixed earlier) so verify/diff are accurate.
+
+### Next Steps
+1. On the Mac: `python3 imessage_attachments.py --retry` → aim for "ALL present in
+   all three places"; open `VERIFY_REPORT.md` for any diff.
+2. Download offloaded iCloud items, re-run `--retry`.
+3. Optional: I can confirm the files in Chris's Drive cloud via MCP once synced.
+
+### Questions/Blockers
+- Real-Mac/Drive run pending (no Messages DB or Drive in this container).
+
+---
+
+
 ## 2026-06-14 — Message text export now lives local + Google Drive
 
 ### What We Built

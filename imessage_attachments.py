@@ -102,12 +102,60 @@ def find_google_drive_dir():
     return None
 
 
-def default_output_dir():
-    """Prefer a Google Drive folder; otherwise fall back to ~/Downloads."""
-    drive = find_google_drive_dir()
-    if drive:
-        return os.path.join(drive, ARCHIVE_FOLDER_NAME)
+def default_local_dir():
+    """Primary archive lives locally — safe to mirror UP to Drive from here
+    (mirroring up from a real local copy avoids copying iCloud-offloaded stubs)."""
     return os.path.expanduser(f"~/Downloads/{ARCHIVE_FOLDER_NAME}")
+
+
+def default_output_dir():
+    return default_local_dir()
+
+
+def drive_archive_dir(drive_dir=None):
+    """The Google Drive mirror location, or None if no Drive folder is found."""
+    drive = drive_dir or find_google_drive_dir()
+    return os.path.join(drive, ARCHIVE_FOLDER_NAME) if drive else None
+
+
+def mirror_tree(src_dir, dest_dir):
+    """Incrementally copy src_dir → dest_dir (skip files already present with the
+    same size). Returns the number of files newly copied/updated."""
+    copied = 0
+    for root, _dirs, files in os.walk(src_dir):
+        rel = os.path.relpath(root, src_dir)
+        target_root = dest_dir if rel == "." else os.path.join(dest_dir, rel)
+        os.makedirs(target_root, exist_ok=True)
+        for name in files:
+            s = os.path.join(root, name)
+            d = os.path.join(target_root, name)
+            try:
+                if os.path.exists(d) and os.path.getsize(d) == os.path.getsize(s):
+                    continue
+                shutil.copy2(s, d)
+                copied += 1
+            except Exception:
+                pass
+    return copied
+
+
+def mirror_to_drive(src_dir, drive_dir=None):
+    """Copy the local archive into Google Drive so attachments live in BOTH
+    places. Returns the Drive destination, or None if there's no Drive folder."""
+    if not os.path.isdir(src_dir):
+        return None
+    dest = drive_archive_dir(drive_dir)
+    if not dest:
+        print("\nNo Google Drive folder detected — attachments are saved locally:")
+        print(f"  {src_dir}")
+        print("Install 'Google Drive for desktop' (or pass --drive PATH) to also "
+              "copy them to Drive.")
+        return None
+    n = mirror_tree(src_dir, dest)
+    print(f"\nAttachments now live in BOTH places ({n:,} new/updated on Drive):")
+    print(f"  Local:        {src_dir}")
+    print(f"  Google Drive: {dest}")
+    return dest
 
 
 def decode_attributed_body(data):
@@ -537,15 +585,15 @@ def all_attachment_rows(cursor):
     return cursor.fetchall()
 
 
-def verify_archive(db_path=MESSAGES_DB, output_dir=None, verbose=True):
-    """Reconcile Messages against the archive folder and report completeness.
-
-    Answers: are all the attachments I *can* copy actually sitting in the
-    archive (which should live in Google Drive)? What's still offloaded in
-    iCloud? What needs another `--full` run?
+def verify_archive(db_path=MESSAGES_DB, output_dir=None, drive_dir=None,
+                   expect_drive=True, verbose=True, write_report=True):
+    """Three-way reconciliation: Messages (the device) vs the LOCAL archive vs
+    the GOOGLE DRIVE mirror. Confirms every downloadable attachment is present in
+    all three places, and flags what's offloaded in iCloud or missing anywhere.
     """
     output_dir = output_dir or default_output_dir()
     manifest_path = os.path.join(output_dir, "attachments.json")
+    drive_mirror = drive_archive_dir(drive_dir) if expect_drive else None
 
     if not os.path.exists(manifest_path):
         if verbose:
@@ -574,97 +622,200 @@ def verify_archive(db_path=MESSAGES_DB, output_dir=None, verbose=True):
             "on_disk": bool(filename) and os.path.exists(os.path.expanduser(filename)),
         }
 
-    verified = 0
-    missing_from_archive = 0   # on disk, should be archived, but file not found
-    not_in_manifest = 0        # newer than the last archive run
-    offloaded = 0              # in iCloud, not downloaded to this Mac
-    size_warn = 0              # present but size differs (often "online only")
+    downloadable = in_local = in_drive = offloaded = size_warn = 0
+    offloaded_list, missing_local_list, missing_drive_list = [], [], []
+
+    def detail(rid):
+        rec = man_by_id.get(rid) or {}
+        return {
+            "attachment_id": rid,
+            "conversation": rec.get("conversation"),
+            "date": rec.get("date"),
+            "original_name": rec.get("original_name"),
+            "saved_path": rec.get("saved_path"),
+        }
 
     for rid, info in expected.items():
         if not info["on_disk"]:
-            offloaded += 1
+            offloaded += 1            # referenced on the device, not downloaded
+            offloaded_list.append(detail(rid))
             continue
+        downloadable += 1
         rec = man_by_id.get(rid)
         saved = rec.get("saved_path") if rec else None
-        if not rec:
-            not_in_manifest += 1
-            continue
         if not saved:
-            missing_from_archive += 1
+            missing_local_list.append(detail(rid))
+            if drive_mirror is not None:
+                missing_drive_list.append(detail(rid))
             continue
-        fpath = os.path.join(output_dir, saved)
-        if os.path.exists(fpath):
-            verified += 1
+        if os.path.exists(os.path.join(output_dir, saved)):
+            in_local += 1
             try:
-                if info["total"] and abs(os.path.getsize(fpath) - info["total"]) > 1024:
+                if info["total"] and abs(
+                        os.path.getsize(os.path.join(output_dir, saved))
+                        - info["total"]) > 1024:
                     size_warn += 1
             except OSError:
                 pass
         else:
-            missing_from_archive += 1
+            missing_local_list.append(detail(rid))
+        if drive_mirror is not None:
+            if os.path.exists(os.path.join(drive_mirror, saved)):
+                in_drive += 1
+            else:
+                missing_drive_list.append(detail(rid))
 
-    downloadable = sum(1 for i in expected if expected[i]["on_disk"])
-    need_rerun = missing_from_archive + not_in_manifest
-    complete = (verified == downloadable) and need_rerun == 0
-
-    drive = find_google_drive_dir()
-    in_drive = bool(drive) and _is_inside(output_dir, drive)
+    missing_local = len(missing_local_list)
+    missing_drive = len(missing_drive_list)
+    local_ok = in_local == downloadable
+    drive_present = drive_mirror is not None and os.path.isdir(drive_mirror)
+    drive_ok = drive_present and in_drive == downloadable
+    if expect_drive:
+        complete = local_ok and drive_ok
+    else:
+        complete = local_ok
 
     result = {
         "complete": complete,
         "output_dir": output_dir,
-        "in_drive": in_drive,
+        "drive_dir": drive_mirror,
+        "expect_drive": expect_drive,
         "expected": len(expected),
         "downloadable": downloadable,
-        "verified": verified,
+        "in_local": in_local,
+        "in_drive": in_drive,
         "offloaded": offloaded,
-        "missing_from_archive": need_rerun,
+        "missing_local": missing_local,
+        "missing_drive": missing_drive,
         "size_warnings": size_warn,
+        "offloaded_list": offloaded_list,
+        "missing_local_list": missing_local_list,
+        "missing_drive_list": missing_drive_list,
+        # legacy aliases
+        "verified": in_local,
+        "missing_from_archive": missing_local,
     }
 
     if verbose:
-        print("=" * 60)
-        print("  Desmond — Verify backup")
-        print("=" * 60)
-        print(f"  Archive folder: {output_dir}")
-        if in_drive:
-            print("  ✓ This folder is inside your Google Drive — it syncs to Drive.")
-        elif drive:
-            print(f"  ⚠️  This folder is NOT inside your Google Drive ({drive}).")
-            print("     Re-run the backup with:  --dest \"<your Google Drive folder>\"")
+        print("=" * 64)
+        print("  Desmond — Verify backup (device vs local vs Google Drive)")
+        print("=" * 64)
+        print(f"  ON THE DEVICE (Messages):  {len(expected):,} attachments "
+              f"— {downloadable:,} downloaded, {offloaded:,} offloaded in iCloud")
+        ok = "✅" if local_ok else "⚠️ "
+        print(f"  IN LOCAL ARCHIVE:          {in_local:,} / {downloadable:,}  {ok}"
+              f"  ({output_dir})")
+        if not expect_drive:
+            print("  ON GOOGLE DRIVE:           (skipped — --no-drive)")
+        elif not drive_present:
+            print("  ON GOOGLE DRIVE:           ⚠️  no Drive mirror found "
+                  "(install Google Drive for desktop / use --drive PATH)")
         else:
-            print("  ℹ️  No Google Drive for desktop detected — this folder is on")
-            print("     your computer. Drag it to drive.google.com to upload.")
-        print("-" * 60)
-        print(f"  Attachments in Messages:        {len(expected):,}")
-        print(f"  Downloaded to this Mac:         {downloadable:,}")
-        print(f"  ✓ Verified in the archive:      {verified:,}")
-        if offloaded:
-            print(f"  ⚠️  Offloaded in iCloud:         {offloaded:,} "
-                  "(download these, then re-run --full)")
-        if need_rerun:
-            print(f"  ⚠️  Missing from archive:        {need_rerun:,} "
-                  "(run --full to copy them)")
+            ok = "✅" if drive_ok else "⚠️ "
+            print(f"  ON GOOGLE DRIVE:           {in_drive:,} / {downloadable:,}  {ok}"
+                  f"  ({drive_mirror})")
+        print("-" * 64)
+        if missing_local:
+            print(f"  ⚠️  Missing from LOCAL:     {missing_local:,} "
+                  "→ run:  python3 imessage_attachments.py --full")
+        if expect_drive and drive_present and missing_drive:
+            print(f"  ⚠️  Missing from DRIVE:     {missing_drive:,} "
+                  "→ re-run the backup to mirror them up")
         if size_warn:
-            print(f"  ℹ️  Size differs on {size_warn:,} file(s) — usually fine if "
-                  "Google Drive set them to 'online only'.")
-        print("-" * 60)
-        if complete and not offloaded:
-            print(f"  ✅ COMPLETE — all {downloadable:,} downloadable attachments "
-                  "are in the archive.")
+            print(f"  ℹ️  {size_warn:,} file(s) differ in size — usually fine if "
+                  "Drive set them to 'online only'.")
+        if complete and offloaded == 0:
+            print(f"  ✅ ALL {downloadable:,} attachments are present in all three "
+                  "places.")
         elif complete:
-            print(f"  ✅ All {downloadable:,} downloaded attachments are archived.")
-            print(f"     ⚠️ {offloaded:,} are still offloaded in iCloud — download "
-                  "them and re-run --full to include them.")
+            print(f"  ✅ All {downloadable:,} downloaded attachments are in local "
+                  + ("+ Drive" if expect_drive else "") + ".")
+            print(f"  ⚠️  {offloaded:,} are still offloaded in iCloud — download "
+                  "them, re-run --full, and verify again.")
         else:
-            print("  ⚠️  INCOMPLETE — run:  python3 imessage_attachments.py --full")
-            print("      then verify again.")
-        if in_drive:
-            print("  Note: files in the Drive folder upload in the background — "
-                  "open the Drive app / drive.google.com and confirm sync finished.")
-        print("=" * 60)
+            print("  ⚠️  NOT fully in sync yet — follow the steps above, then "
+                  "verify again.")
+        if drive_present:
+            print("  Note: Drive uploads in the background — confirm sync finished "
+                  "in the Drive app before clearing space on your phone.")
+        print("=" * 64)
+
+    if write_report and os.path.isdir(output_dir):
+        report_path = write_verify_report(result, output_dir)
+        result["report_path"] = report_path
+        if verbose:
+            print(f"  Full diff + counts written to: {report_path}")
 
     return result
+
+
+def write_verify_report(result, output_dir):
+    """Write VERIFY_REPORT.md + verify_diff.json: per-place counts and the exact
+    list of what's missing where, so re-runs can close the gap."""
+    json_path = os.path.join(output_dir, "verify_diff.json")
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump({
+            "generated": datetime.now().isoformat(),
+            "complete": result["complete"],
+            "counts": {
+                "device_total": result["expected"],
+                "device_downloaded": result["downloadable"],
+                "device_offloaded": result["offloaded"],
+                "in_local": result["in_local"],
+                "in_drive": result["in_drive"],
+                "missing_local": result["missing_local"],
+                "missing_drive": result["missing_drive"],
+            },
+            "missing_local": result["missing_local_list"],
+            "missing_drive": result["missing_drive_list"],
+            "offloaded": result["offloaded_list"],
+        }, f, indent=2)
+
+    def _rows(items):
+        out = []
+        for m in items[:1000]:
+            who = m.get("conversation") or "?"
+            when = m.get("date") or "?"
+            name = m.get("original_name") or f"id {m.get('attachment_id')}"
+            out.append(f"- {when} · {who} · {name} (id {m.get('attachment_id')})")
+        if len(items) > 1000:
+            out.append(f"- … and {len(items) - 1000:,} more (see verify_diff.json)")
+        return "\n".join(out) if out else "- (none)"
+
+    md_path = os.path.join(output_dir, "VERIFY_REPORT.md")
+    with open(md_path, "w", encoding="utf-8") as f:
+        f.write("# Backup Verification Report\n\n")
+        f.write(f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n")
+        f.write("## How many attachments in each place\n\n")
+        f.write("| Place | Attachments |\n|---|---|\n")
+        f.write(f"| On the device (Messages) | {result['expected']:,} "
+                f"({result['downloadable']:,} downloaded, "
+                f"{result['offloaded']:,} offloaded in iCloud) |\n")
+        f.write(f"| Local archive | {result['in_local']:,} / "
+                f"{result['downloadable']:,} |\n")
+        drive_cell = (f"{result['in_drive']:,} / {result['downloadable']:,}"
+                      if result.get("drive_dir") else "no Drive mirror found")
+        f.write(f"| Google Drive | {drive_cell} |\n\n")
+        verdict = ("✅ All downloaded attachments are present in every place."
+                   if result["complete"] and result["offloaded"] == 0 else
+                   "✅ Local + Drive complete; some still offloaded in iCloud."
+                   if result["complete"] else
+                   "⚠️ Not fully in sync — see the diff below, then re-run.")
+        f.write(f"**Verdict:** {verdict}\n\n")
+        f.write("## To finish the archive\n\n")
+        f.write("1. Re-run the backup to copy/mirror anything missing:\n"
+                "   `python3 imessage_attachments.py --full`\n"
+                "   (or `--retry` to loop until complete).\n"
+                "2. For offloaded items, download them in Messages first "
+                "(turn off \"Optimize Mac Storage\" or open the threads), then re-run.\n\n")
+        f.write(f"## Missing from LOCAL archive ({result['missing_local']:,})\n\n")
+        f.write(_rows(result["missing_local_list"]) + "\n\n")
+        f.write(f"## Missing from GOOGLE DRIVE ({result['missing_drive']:,})\n\n")
+        f.write(_rows(result["missing_drive_list"]) + "\n\n")
+        f.write(f"## Offloaded in iCloud — not downloaded yet "
+                f"({result['offloaded']:,})\n\n")
+        f.write(_rows(result["offloaded_list"]) + "\n")
+    return md_path
 
 
 def main():
@@ -678,14 +829,22 @@ def main():
     parser.add_argument("--photos-videos", action="store_true",
                         help="Only images and videos (skip audio/files).")
     parser.add_argument("--dest", metavar="PATH",
-                        help="Destination folder (e.g. your Google Drive folder). "
-                             "Defaults to a detected Google Drive folder, else "
-                             "~/Downloads/.")
+                        help="Local archive folder (the primary copy). "
+                             "Default: ~/Downloads/Desmond_Message_Attachments.")
+    parser.add_argument("--drive", metavar="PATH",
+                        help="Google Drive folder to also mirror into "
+                             "(default: auto-detected Google Drive for desktop).")
+    parser.add_argument("--no-drive", action="store_true",
+                        help="Keep the local copy only; don't mirror to Google Drive.")
     parser.add_argument("--db", metavar="PATH", default=MESSAGES_DB,
                         help="Path to chat.db (default: ~/Library/Messages/chat.db).")
     parser.add_argument("--verify", action="store_true",
-                        help="Check that all attachments are in the (Drive) archive; "
-                             "copy nothing. Exits non-zero if anything is missing.")
+                        help="Three-way check (device vs local vs Drive); writes a "
+                             "report, copies nothing. Non-zero exit if incomplete.")
+    parser.add_argument("--retry", nargs="?", type=int, const=3, default=None,
+                        metavar="N",
+                        help="Back up + mirror + verify in a loop (default 3 passes) "
+                             "until local & Drive are complete.")
     parser.add_argument("--no-verify", action="store_true",
                         help="Skip the automatic verification pass after archiving.")
     args = parser.parse_args()
@@ -699,36 +858,52 @@ def main():
         sys.exit(1)
 
     output_dir = os.path.expanduser(args.dest) if args.dest else default_output_dir()
+    drive_override = os.path.expanduser(args.drive) if args.drive else None
     types = {"photo", "video"} if args.photos_videos else None
+    expect_drive = not args.no_drive
 
-    # Verify-only mode: just check the existing archive and report.
+    # Verify-only mode: three-way report (device vs local vs Drive), copy nothing.
     if args.verify:
-        res = verify_archive(db_path=args.db, output_dir=output_dir)
+        res = verify_archive(db_path=args.db, output_dir=output_dir,
+                             drive_dir=drive_override, expect_drive=expect_drive)
         sys.exit(0 if res.get("complete") else 1)
 
-    drive = find_google_drive_dir()
-    if args.dest:
-        print(f"Destination: {output_dir}")
-    elif drive:
-        print(f"Detected Google Drive — archiving into:\n  {output_dir}")
-    else:
-        print("No Google Drive folder detected. Archiving locally into:\n"
-              f"  {output_dir}\n"
-              "(Install 'Google Drive for desktop' and re-run with --dest to "
-              "store it on Drive.)")
+    def run_once(full):
+        print(f"\nArchiving locally to: {output_dir}")
+        if expect_drive:
+            dm = drive_archive_dir(drive_override)
+            print(f"…and mirroring to Google Drive: {dm}" if dm else
+                  "(No Google Drive detected — saving locally only. Install Google "
+                  "Drive for desktop or pass --drive PATH.)")
+        archive_attachments(db_path=args.db, output_dir=output_dir,
+                            full=full, types=types, dry_run=args.dry_run)
+        if args.dry_run:
+            return None
+        if expect_drive:
+            mirror_to_drive(output_dir, drive_override)
+        if args.no_verify:
+            return None
+        print("\nVerifying (device vs local vs Google Drive)…")
+        return verify_archive(db_path=args.db, output_dir=output_dir,
+                              drive_dir=drive_override, expect_drive=expect_drive)
 
     try:
-        archive_attachments(
-            db_path=args.db,
-            output_dir=output_dir,
-            full=args.full,
-            types=types,
-            dry_run=args.dry_run,
-        )
-        # Confirm the files actually landed (unless this was a dry run).
-        if not args.dry_run and not args.no_verify:
-            print("\nVerifying…")
-            verify_archive(db_path=args.db, output_dir=output_dir)
+        if args.retry is not None and not args.dry_run:
+            attempts = max(1, args.retry)
+            res = None
+            for i in range(attempts):
+                print(f"\n===== Attempt {i + 1} of {attempts} =====")
+                res = run_once(full=True)
+                if res and res.get("complete"):
+                    print(f"\n✅ Archive complete after {i + 1} pass(es).")
+                    break
+            else:
+                print(f"\n⚠️  Still incomplete after {attempts} passes — see "
+                      "VERIFY_REPORT.md. Download any offloaded iCloud items, then "
+                      "run --retry again.")
+            sys.exit(0 if (res and res.get("complete")) else 1)
+        else:
+            run_once(full=args.full)
     except Exception as e:
         print(f"Error: {e}")
         import traceback
