@@ -145,6 +145,63 @@ chmod +x setup_imessage_exporter.sh
 
 ---
 
+## Archiving Photos & Videos (and Google Drive)
+
+The exporters above save your message **text** and note when a photo/video was
+sent. To actually **keep the photos, videos, and files themselves**, use the
+attachment archiver. It copies the real media out of Messages into a browsable
+folder you can keep forever — ideal for dropping onto Google Drive.
+
+> Runs on your **Mac** (that's where Messages and the files live). To land it on
+> Google Drive, install **Google Drive for desktop** and point `--dest` at your
+> Drive folder — the Drive app uploads it automatically. Desmond auto-detects a
+> Drive folder if you have one.
+
+```bash
+# 1. See how much space it will take first (copies nothing):
+python3 imessage_attachments.py --dry-run
+
+# 2. Archive everything (auto-detects Google Drive, else ~/Downloads):
+python3 imessage_attachments.py --full
+
+# Only images & videos:
+python3 imessage_attachments.py --photos-videos
+
+# Or send it straight to a specific Google Drive folder:
+python3 imessage_attachments.py --full --dest "/Users/you/Library/CloudStorage/GoogleDrive-…/My Drive/Messages"
+```
+
+Or just double-click `desmond_attachments.sh`.
+
+**What you get:**
+
+```
+Desmond_Message_Attachments/
+├── ATTACHMENTS_INDEX.md     # counts, total size, top conversations, what's missing
+├── attachments.json         # manifest: every file → conversation, sender, date, text
+├── attachments.csv          # same, for spreadsheets
+├── Mom/
+│   ├── 2024-01-15_0932_IMG_1234.HEIC
+│   └── 2024-03-02_1810_movie.MOV
+└── ...
+```
+
+Files are named `YYYY-MM-DD_HHMM_originalname` so they sort by date and stay
+recognizable. To **find** something later, browse the per-contact folders or
+open `attachments.csv` and filter by person/date/type, then follow `saved_path`.
+
+**Reads Messages read-only — it never modifies or deletes anything.** Re-runs are
+incremental (only new attachments are copied).
+
+> **⚠️ Before you delete anything from your phone to free up space:** if
+> "Messages in iCloud" with "Optimize Mac Storage" is on, some originals may be
+> offloaded and not on your Mac yet. The archiver lists these as **MISSING** in
+> `ATTACHMENTS_INDEX.md`. Re-download them (open the thread, turn off "Optimize
+> Mac Storage", or run `desmond.sh` to sync) and re-run until nothing is missing
+> — *then* it's safe to clear space on the phone.
+
+---
+
 ## Windows Setup (iPhone)
 
 ### Requirements
@@ -261,7 +318,7 @@ The script will automatically search common folders (Downloads, Documents, Deskt
 | **Special content** | Yes (GamePigeon, etc.) | Yes | No |
 | **Message effects** | Yes | Yes | No |
 | **Call logs** | No | No | Yes (optional) |
-| **MMS/photos** | Metadata only | Metadata only | Metadata only |
+| **MMS/photos (the actual files)** | **Exported** (`imessage_attachments.py`) | Metadata only | Metadata only |
 
 ### Key Differences
 
@@ -377,7 +434,10 @@ The script will automatically search common folders (Downloads, Documents, Deskt
 | File | Purpose |
 |------|---------|
 | `desmond.sh` | Automates iCloud Messages sync |
-| `imessage_exporter.py` | Exports messages from Mac |
+| `imessage_exporter.py` | Exports message text from Mac |
+| `imessage_attachments.py` | Archives the actual photos/videos/files (Google Drive-ready) |
+| `desmond_attachments.sh` | Easy launcher for the attachment archiver |
+| `imessage_picker.py` | Browser UI to pick/preview/export specific conversations |
 | `setup_imessage_exporter.sh` | Sets up hourly automatic exports |
 
 ### Windows (iPhone)

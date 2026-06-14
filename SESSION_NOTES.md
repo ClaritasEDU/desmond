@@ -9,6 +9,84 @@ This file contains a complete history of Claude Code sessions for this repositor
 
 ---
 
+## 2026-06-14 — Attachment Archiver (real photos/videos → Google Drive)
+
+### What We Built
+Desmond's exporters captured message **text** and *noted* that a photo/video
+existed ("[photo]") but never saved the actual files — confirmed by the code and
+by PRODUCT_SPEC ("Attachment files are not exported"; "Attachment export" was the
+#1 future enhancement). Chris wants the real images/videos/attachments archived,
+findable/retrievable, and stored on Google Drive (lots of space there).
+
+New: **`imessage_attachments.py`** + **`desmond_attachments.sh`** launcher +
+**`test_imessage_attachments.py`** (synthetic-DB test, 14 checks passing).
+
+### Technical Details
+- Reads `~/Library/Messages/chat.db` **read-only** (`mode=ro` URI). Never modifies
+  or deletes anything in Messages.
+- Joins `attachment → message_attachment_join → message → chat` and copies each
+  real file from `attachment.filename` (expands `~`, typically
+  `~/Library/Messages/Attachments/…`) via `shutil.copy2` (preserves mtime).
+- Output (default `Desmond_Message_Attachments/`):
+  per-contact folders, files named `YYYY-MM-DD_HHMM_originalname` (collision-safe),
+  plus `attachments.json`, `attachments.csv`, and `ATTACHMENTS_INDEX.md`
+  (counts, total size, top conversations, and a **MISSING** list).
+- **Google Drive:** auto-detects `~/Library/CloudStorage/GoogleDrive-*/My Drive`
+  (or legacy `~/Google Drive`); `--dest` overrides. The script writes into that
+  folder and the Google Drive desktop app uploads it — Desmond itself uploads
+  nothing (keeps the "no network / stdlib-only" design).
+- Flags: `--full`, `--dry-run` (size preview, copies nothing), `--photos-videos`,
+  `--dest PATH`, `--db PATH`. Incremental state in `.attachments_state.json`
+  (re-runs only copy new files).
+- **iCloud safety:** if "Optimize Mac Storage" offloaded originals, those files
+  aren't on disk; they're reported as MISSING so Chris re-downloads them BEFORE
+  deleting anything from his phone. Reuses `imessage_exporter` helpers (contacts,
+  timestamps) to stay DRY.
+
+### Current Status
+- ✅ Code compiles; synthetic-DB test passes (copy, missing-detection, manifests,
+  incremental, photos/videos filter, dry-run).
+- ✅ Committed/pushed to `claude/nifty-cori-60alcq`.
+- 🚧 NOT yet run against a real `chat.db` — no Messages DB in the Linux container.
+  First real run must be on Chris's Mac.
+- ❌ Windows (iPhone-backup) and Android (MMS base64) attachment extraction not
+  built yet — macOS only for now.
+
+### Branch Info
+- Branch: `claude/nifty-cori-60alcq` (session branch assigned by the harness).
+- New files: `imessage_attachments.py`, `desmond_attachments.sh`,
+  `test_imessage_attachments.py`. Updated: README.md, PRODUCT_SPEC.md,
+  PROJECT_STATUS.md, SESSION_NOTES.md.
+
+### Decisions Made
+- **Write-to-Drive-folder over Drive API:** keeps Desmond zero-dependency and
+  "nothing uploaded by the script"; the official Drive app handles the upload.
+  (The agent's own Google Drive MCP tools can't help here — the attachment files
+  live only on Chris's Mac, not in this container.)
+- Copy **all** real attachments by default (back up everything), with a
+  `--photos-videos` option; categorize in the manifest.
+- Standalone module rather than touching the working `imessage_exporter.py`, but
+  it imports its helpers (single source of truth).
+- Committed a real test since this tool copies irreplaceable data and can't be
+  run on a Mac from here.
+
+### Next Steps
+1. On the Mac: `cd ~/desmond && git pull` → `python3 imessage_attachments.py --dry-run`
+   (preview size) → `--full` (archive into Google Drive).
+2. Confirm the MISSING list is empty (re-download offloaded media) before freeing
+   phone space.
+3. Consider attachment extraction for Windows/Android, and an "include
+   attachments" toggle in the browser picker.
+
+### Questions/Blockers
+- Confirm Chris is on **iPhone + Mac** (assumed — matches the flagship + the Mac
+  paths in CLAUDE.md). If primarily Android, the equivalent extractor (base64 from
+  the SMS Backup & Restore XML) is a quick follow-up.
+- Real-Mac verification still pending (no Messages DB in the container).
+
+---
+
+
 ## 2026-06-13 — Browser-based Message Picker
 
 ### What We Built
