@@ -381,7 +381,21 @@ def archive_attachments(
     }
 
     if not dry_run:
-        write_manifests(records, result, output_dir)
+        # Keep the manifest CUMULATIVE: merge this run's records with any
+        # existing manifest so incremental runs never lose earlier history.
+        merged = {}
+        existing = os.path.join(output_dir, "attachments.json")
+        if not full and os.path.exists(existing):
+            try:
+                with open(existing, encoding="utf-8") as ef:
+                    for a in json.load(ef).get("attachments", []):
+                        if a.get("attachment_id") is not None:
+                            merged[a["attachment_id"]] = a
+            except Exception:
+                pass
+        for r in records:
+            merged[r["attachment_id"]] = r
+        write_manifests(list(merged.values()), output_dir)
         state["last_attachment_rowid"] = max_rowid
         state["last_run"] = datetime.now().isoformat()
         save_state(state_file, state)
@@ -401,17 +415,33 @@ def safe_name_keep_ext(name):
     return (cleaned or "attachment")[:120] + ext
 
 
-def write_manifests(records, result, output_dir):
-    """Write JSON + CSV manifests and a human-readable index."""
+def write_manifests(records, output_dir):
+    """Write JSON + CSV manifests and a human-readable index from the full
+    (cumulative) set of archive records."""
+    copied = [r for r in records if r.get("status") in ("copied", "already_archived")]
+    missing = [r for r in records if r.get("status") == "missing"]
+    total_bytes = sum(r.get("size_bytes") or 0 for r in copied)
+
+    by_category = defaultdict(lambda: {"count": 0, "bytes": 0})
+    by_conversation = defaultdict(lambda: {"count": 0, "bytes": 0})
+    for r in copied:
+        size = r.get("size_bytes") or 0
+        cat = r.get("category", "file")
+        by_category[cat]["count"] += 1
+        by_category[cat]["bytes"] += size
+        conv = r.get("conversation", "?")
+        by_conversation[conv]["count"] += 1
+        by_conversation[conv]["bytes"] += size
+
     # JSON
     with open(os.path.join(output_dir, "attachments.json"), "w", encoding="utf-8") as f:
         json.dump(
             {
                 "generated": datetime.now().isoformat(),
                 "output_dir": output_dir,
-                "copied_count": result["copied_count"],
-                "copied_bytes": result["copied_bytes"],
-                "missing_count": result["missing_count"],
+                "copied_count": len(copied),
+                "copied_bytes": total_bytes,
+                "missing_count": len(missing),
                 "attachments": records,
             },
             f,
@@ -432,41 +462,36 @@ def write_manifests(records, result, output_dir):
     with open(os.path.join(output_dir, "ATTACHMENTS_INDEX.md"), "w", encoding="utf-8") as f:
         f.write("# Message Attachments Archive\n\n")
         f.write(f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
-        f.write(f"**Archived files:** {result['copied_count']:,} "
-                f"({result['copied_human']})\n")
-        if result["skipped_existing"]:
-            f.write(f"**Already archived (skipped):** {result['skipped_existing']:,}\n")
-        f.write(f"**Missing / not downloaded:** {result['missing_count']:,}\n\n")
+        f.write(f"**Archived files:** {len(copied):,} ({human_size(total_bytes)})\n")
+        f.write(f"**Missing / not downloaded:** {len(missing):,}\n\n")
 
         f.write("## By type\n\n")
-        for cat, stats in sorted(result["by_category"].items(),
-                                 key=lambda x: -x[1]["bytes"]):
+        for cat, stats in sorted(by_category.items(), key=lambda x: -x[1]["bytes"]):
             f.write(f"- **{cat}:** {stats['count']:,} ({human_size(stats['bytes'])})\n")
 
         f.write("\n## Top conversations (by size)\n\n")
-        top = sorted(result["by_conversation"].items(),
-                     key=lambda x: -x[1]["bytes"])[:25]
-        for conv, stats in top:
+        for conv, stats in sorted(by_conversation.items(),
+                                  key=lambda x: -x[1]["bytes"])[:25]:
             f.write(f"- **{conv}**: {stats['count']:,} files "
                     f"({human_size(stats['bytes'])})\n")
 
-        if result["missing"]:
+        if missing:
             f.write("\n## ⚠️ Missing (likely offloaded to iCloud)\n\n")
             f.write("These attachments are referenced by Messages but the file "
                     "isn't on this Mac yet. Re-download them (open the thread, or "
                     "turn off Settings → Apple ID → iCloud → Messages → "
                     "\"Optimize Mac Storage\", or run `desmond.sh` to sync) and "
                     "run this again **before deleting anything from your phone.**\n\n")
-            for m in result["missing"][:200]:
-                f.write(f"- {m.get('conversation', '?')}: {m.get('name', '?')} "
-                        f"— {m.get('reason', '')}\n")
-            if len(result["missing"]) > 200:
-                f.write(f"- … and {len(result['missing']) - 200:,} more "
+            for m in missing[:200]:
+                f.write(f"- {m.get('conversation', '?')}: "
+                        f"{m.get('original_name', '?')}\n")
+            if len(missing) > 200:
+                f.write(f"- … and {len(missing) - 200:,} more "
                         f"(see attachments.csv, status=missing)\n")
 
         f.write("\n## How to find a file\n\n")
         f.write("- Browse the per-conversation folders (named by contact).\n")
-        f.write("- Files are named `YYYY-MM-DD_HHMM_originalname`.\n")
+        f.write("- Files are named `YYYY-MM-DD_HHMM_<people>_originalname`.\n")
         f.write("- Or open `attachments.csv` and filter by conversation, date, "
                 "or type, then follow `saved_path`.\n")
 
@@ -489,6 +514,159 @@ def print_summary(result):
     print("=" * 60)
 
 
+# ---------------------------------------------------------------------------
+# Verification — did everything actually make it into the (Drive) archive?
+# ---------------------------------------------------------------------------
+def _is_inside(child, parent):
+    try:
+        child = os.path.abspath(child)
+        parent = os.path.abspath(parent)
+        return os.path.commonpath([child, parent]) == parent
+    except (ValueError, TypeError):
+        return False
+
+
+def all_attachment_rows(cursor):
+    """Every attachment that belongs to a message (the archiver's scope)."""
+    cursor.execute("""
+        SELECT attachment.ROWID, attachment.filename, attachment.total_bytes
+        FROM attachment
+        JOIN message_attachment_join
+          ON attachment.ROWID = message_attachment_join.attachment_id
+    """)
+    return cursor.fetchall()
+
+
+def verify_archive(db_path=MESSAGES_DB, output_dir=None, verbose=True):
+    """Reconcile Messages against the archive folder and report completeness.
+
+    Answers: are all the attachments I *can* copy actually sitting in the
+    archive (which should live in Google Drive)? What's still offloaded in
+    iCloud? What needs another `--full` run?
+    """
+    output_dir = output_dir or default_output_dir()
+    manifest_path = os.path.join(output_dir, "attachments.json")
+
+    if not os.path.exists(manifest_path):
+        if verbose:
+            print("=" * 60)
+            print("  Desmond — Verify — no archive found")
+            print("=" * 60)
+            print(f"  Looked in: {output_dir}")
+            print("  No attachments.json manifest here yet.")
+            print("  Run the backup first:  python3 imessage_attachments.py --full")
+            print("=" * 60)
+        return {"complete": False, "reason": "no_manifest", "output_dir": output_dir}
+
+    with open(manifest_path, encoding="utf-8") as f:
+        manifest = json.load(f)
+    man_by_id = {a.get("attachment_id"): a for a in manifest.get("attachments", [])}
+
+    conn = open_db(db_path)
+    cursor = conn.cursor()
+    rows = all_attachment_rows(cursor)
+    conn.close()
+
+    expected = {}
+    for rid, filename, total in rows:
+        expected[rid] = {
+            "total": total,
+            "on_disk": bool(filename) and os.path.exists(os.path.expanduser(filename)),
+        }
+
+    verified = 0
+    missing_from_archive = 0   # on disk, should be archived, but file not found
+    not_in_manifest = 0        # newer than the last archive run
+    offloaded = 0              # in iCloud, not downloaded to this Mac
+    size_warn = 0              # present but size differs (often "online only")
+
+    for rid, info in expected.items():
+        if not info["on_disk"]:
+            offloaded += 1
+            continue
+        rec = man_by_id.get(rid)
+        saved = rec.get("saved_path") if rec else None
+        if not rec:
+            not_in_manifest += 1
+            continue
+        if not saved:
+            missing_from_archive += 1
+            continue
+        fpath = os.path.join(output_dir, saved)
+        if os.path.exists(fpath):
+            verified += 1
+            try:
+                if info["total"] and abs(os.path.getsize(fpath) - info["total"]) > 1024:
+                    size_warn += 1
+            except OSError:
+                pass
+        else:
+            missing_from_archive += 1
+
+    downloadable = sum(1 for i in expected if expected[i]["on_disk"])
+    need_rerun = missing_from_archive + not_in_manifest
+    complete = (verified == downloadable) and need_rerun == 0
+
+    drive = find_google_drive_dir()
+    in_drive = bool(drive) and _is_inside(output_dir, drive)
+
+    result = {
+        "complete": complete,
+        "output_dir": output_dir,
+        "in_drive": in_drive,
+        "expected": len(expected),
+        "downloadable": downloadable,
+        "verified": verified,
+        "offloaded": offloaded,
+        "missing_from_archive": need_rerun,
+        "size_warnings": size_warn,
+    }
+
+    if verbose:
+        print("=" * 60)
+        print("  Desmond — Verify backup")
+        print("=" * 60)
+        print(f"  Archive folder: {output_dir}")
+        if in_drive:
+            print("  ✓ This folder is inside your Google Drive — it syncs to Drive.")
+        elif drive:
+            print(f"  ⚠️  This folder is NOT inside your Google Drive ({drive}).")
+            print("     Re-run the backup with:  --dest \"<your Google Drive folder>\"")
+        else:
+            print("  ℹ️  No Google Drive for desktop detected — this folder is on")
+            print("     your computer. Drag it to drive.google.com to upload.")
+        print("-" * 60)
+        print(f"  Attachments in Messages:        {len(expected):,}")
+        print(f"  Downloaded to this Mac:         {downloadable:,}")
+        print(f"  ✓ Verified in the archive:      {verified:,}")
+        if offloaded:
+            print(f"  ⚠️  Offloaded in iCloud:         {offloaded:,} "
+                  "(download these, then re-run --full)")
+        if need_rerun:
+            print(f"  ⚠️  Missing from archive:        {need_rerun:,} "
+                  "(run --full to copy them)")
+        if size_warn:
+            print(f"  ℹ️  Size differs on {size_warn:,} file(s) — usually fine if "
+                  "Google Drive set them to 'online only'.")
+        print("-" * 60)
+        if complete and not offloaded:
+            print(f"  ✅ COMPLETE — all {downloadable:,} downloadable attachments "
+                  "are in the archive.")
+        elif complete:
+            print(f"  ✅ All {downloadable:,} downloaded attachments are archived.")
+            print(f"     ⚠️ {offloaded:,} are still offloaded in iCloud — download "
+                  "them and re-run --full to include them.")
+        else:
+            print("  ⚠️  INCOMPLETE — run:  python3 imessage_attachments.py --full")
+            print("      then verify again.")
+        if in_drive:
+            print("  Note: files in the Drive folder upload in the background — "
+                  "open the Drive app / drive.google.com and confirm sync finished.")
+        print("=" * 60)
+
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Archive iMessage photos/videos/files into a browsable folder "
@@ -505,6 +683,11 @@ def main():
                              "~/Downloads/.")
     parser.add_argument("--db", metavar="PATH", default=MESSAGES_DB,
                         help="Path to chat.db (default: ~/Library/Messages/chat.db).")
+    parser.add_argument("--verify", action="store_true",
+                        help="Check that all attachments are in the (Drive) archive; "
+                             "copy nothing. Exits non-zero if anything is missing.")
+    parser.add_argument("--no-verify", action="store_true",
+                        help="Skip the automatic verification pass after archiving.")
     args = parser.parse_args()
 
     if not os.path.exists(args.db):
@@ -517,6 +700,11 @@ def main():
 
     output_dir = os.path.expanduser(args.dest) if args.dest else default_output_dir()
     types = {"photo", "video"} if args.photos_videos else None
+
+    # Verify-only mode: just check the existing archive and report.
+    if args.verify:
+        res = verify_archive(db_path=args.db, output_dir=output_dir)
+        sys.exit(0 if res.get("complete") else 1)
 
     drive = find_google_drive_dir()
     if args.dest:
@@ -537,6 +725,10 @@ def main():
             types=types,
             dry_run=args.dry_run,
         )
+        # Confirm the files actually landed (unless this was a dry run).
+        if not args.dry_run and not args.no_verify:
+            print("\nVerifying…")
+            verify_archive(db_path=args.db, output_dir=output_dir)
     except Exception as e:
         print(f"Error: {e}")
         import traceback

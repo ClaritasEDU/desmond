@@ -140,6 +140,29 @@ def main():
         check(not os.path.exists(out3) or not _all_files(out3),
               "dry-run creates no files")
 
+        # --- Verify: the full archive in `out` should be COMPLETE ---
+        v = att.verify_archive(db_path=db_path, output_dir=out, verbose=False)
+        check(v["complete"] is True, "verify reports complete archive")
+        check(v["verified"] == 2, f"verify counts 2 archived (got {v['verified']})")
+        check(v["offloaded"] == 1, f"verify counts 1 offloaded (got {v['offloaded']})")
+        check(v["missing_from_archive"] == 0, "verify finds nothing missing")
+
+        # --- Verify after tampering: delete one archived file → INCOMPLETE ---
+        with open(os.path.join(out, "attachments.json")) as f:
+            man = json.load(f)
+        a_copied = next(a for a in man["attachments"] if a.get("saved_path"))
+        os.remove(os.path.join(out, a_copied["saved_path"]))
+        v2 = att.verify_archive(db_path=db_path, output_dir=out, verbose=False)
+        check(v2["complete"] is False, "verify catches a deleted/missing file")
+        check(v2["missing_from_archive"] == 1,
+              f"verify flags 1 missing after tamper (got {v2['missing_from_archive']})")
+
+        # --- Verify with no archive present ---
+        v3 = att.verify_archive(db_path=db_path,
+                                output_dir=os.path.join(tmp, "nope"), verbose=False)
+        check(v3["complete"] is False and v3.get("reason") == "no_manifest",
+              "verify reports when no archive exists yet")
+
     print()
     if failures:
         print(f"{len(failures)} test(s) FAILED")

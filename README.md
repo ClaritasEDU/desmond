@@ -202,6 +202,38 @@ incremental (only new attachments are copied).
 
 ---
 
+### Verify the backup actually made it to Google Drive
+
+After archiving, confirm nothing slipped through:
+
+```bash
+python3 imessage_attachments.py --verify
+```
+
+Or double-click `desmond_verify.sh`. It compares Messages against the archive and
+prints a clear verdict:
+
+```
+✓ This folder is inside your Google Drive — it syncs to Drive.
+  Attachments in Messages:        12,431
+  Downloaded to this Mac:         12,419
+  ✓ Verified in the archive:      12,419
+  ⚠️  Offloaded in iCloud:         12  (download these, then re-run --full)
+  ✅ All 12,419 downloaded attachments are archived.
+```
+
+It checks three things: (1) the archive is **inside your Google Drive folder**,
+(2) **every downloadable attachment** is present (and not zero-sized), and (3)
+what's still **offloaded in iCloud** and needs downloading first. A normal backup
+run does this verification automatically at the end; `--verify` lets you re-check
+anytime. (Exit code is non-zero if anything's missing, so it's scriptable.)
+
+> Files inside the Drive folder upload in the background — after a green verdict,
+> glance at the Google Drive app (or drive.google.com) to confirm the upload has
+> finished before you clear space on your phone.
+
+---
+
 ## Browse conversations with photos inline (the picker)
 
 Prefer to grab specific people and *read* the thread with media in place? Use the
@@ -462,8 +494,9 @@ The script will automatically search common folders (Downloads, Documents, Deskt
 |------|---------|
 | `desmond.sh` | Automates iCloud Messages sync |
 | `imessage_exporter.py` | Exports message text from Mac |
-| `imessage_attachments.py` | Archives the actual photos/videos/files (Google Drive-ready) |
+| `imessage_attachments.py` | Archives the actual photos/videos/files (Google Drive-ready); `--verify` checks completeness |
 | `desmond_attachments.sh` | Easy launcher for the attachment archiver |
+| `desmond_verify.sh` | Verifies all attachments are in the Drive archive |
 | `imessage_picker.py` | Browser UI to pick/preview/export specific conversations |
 | `setup_imessage_exporter.sh` | Sets up hourly automatic exports |
 

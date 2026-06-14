@@ -9,6 +9,61 @@ This file contains a complete history of Claude Code sessions for this repositor
 
 ---
 
+## 2026-06-14 — Backup verification (+ cumulative-manifest fix)
+
+### What We Built
+A **verify** step so Chris can run the backup → files go to Google Drive → then
+run the app to confirm it actually worked and **all attachments are in Drive**.
+
+New: `imessage_attachments.py --verify` + `desmond_verify.sh`. A normal (non-dry)
+archive run now also auto-verifies at the end.
+
+### Technical Details
+- `verify_archive()` reconciles the **Messages DB** against the **archive folder**:
+  enumerates every attachment joined to a message, checks which are on disk vs
+  offloaded, then confirms each on-disk one has a real file in the archive
+  (via the manifest's `saved_path`, with a size sanity check). Reports:
+  expected / downloaded-to-Mac / ✓verified / ⚠offloaded-in-iCloud /
+  ⚠missing-from-archive, plus a ✅/⚠️ verdict. Exit code non-zero if incomplete.
+- **Google Drive location check:** `_is_inside(output_dir, find_google_drive_dir())`
+  tells Chris whether the archive is actually inside the Drive sync folder (so it
+  will upload) — and warns if it isn't. Notes that Drive uploads in the
+  background, so to confirm cloud sync in the Drive app after a green verdict.
+- **Bug fixed (important):** incremental runs were **overwriting `attachments.json`
+  with only that run's records**, which would wipe earlier history and break
+  verification + file lookup. `write_manifests` is now self-contained (computes
+  its own stats) and the archiver **merges** each run into a **cumulative**
+  manifest. Caught by the new verify test.
+- CLI: `--verify` (check-only) and `--no-verify` (skip the auto pass).
+
+### Current Status
+- ✅ Compiles; `test_imessage_attachments.py` now 21 checks (incl. complete /
+  tampered / no-archive verify cases) — all pass. Picker suite (17) still green.
+- ✅ Committed/pushed to `claude/nifty-cori-60alcq`.
+- 🚧 Still not run against a real Mac/`chat.db`/Drive — that's Chris's run.
+
+### Decisions Made
+- Verification is a **local** reconciliation (Messages ↔ Drive *folder*). Confirms
+  files are staged in Drive; the cloud-upload-finished check stays a human glance
+  at the Drive app (no API/OAuth — preserves the no-network design). Offered to
+  spot-check Chris's Drive cloud via the agent's Drive tools after he runs it.
+- Manifest must be cumulative (it's the source of truth for "what's archived").
+
+### Next Steps
+1. On the Mac: run the backup (`imessage_attachments.py --full`) → it auto-verifies;
+   or run `desmond_verify.sh` anytime. Aim for the ✅ "all downloaded attachments
+   are archived" verdict; download offloaded ones and re-run `--full` if flagged.
+2. Confirm the archive folder resolves **inside** the Google Drive folder on the
+   Mac (verify prints ✓/⚠ for this).
+3. Optional: I can independently confirm files in Chris's Drive cloud via MCP once
+   he's run it and sync has finished.
+
+### Questions/Blockers
+- Real-Mac/Drive run pending (no Messages DB or Drive in this container).
+
+---
+
+
 ## 2026-06-14 — Picker: inline media, date/time ordering, Google Drive
 
 ### What We Built
