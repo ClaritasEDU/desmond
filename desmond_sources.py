@@ -170,10 +170,14 @@ def read_imessage_db(db_path, lookup=None, source_label="iMessage"):
         if is_group:
             conversation = display_name or f"Group chat {chat_rowid}"
             conv_type = "group"
+            address = (identifier_for(handle_id) if handle_id else None) or ""
         else:
             ident = identifier_for(handle_id) if handle_id else chat_identifier
             conversation = name_for(ident or chat_identifier) or "Unknown"
             conv_type = "direct"
+            # the counterpart's number/email — lets the family differ tell
+            # "same contact name" apart from "same person"
+            address = ident or chat_identifier or ""
 
         if is_from_me:
             sender = "Me"
@@ -188,6 +192,7 @@ def read_imessage_db(db_path, lookup=None, source_label="iMessage"):
             "time": when.strftime("%H:%M:%S"),
             "conversation": conversation,
             "conversation_type": conv_type,
+            "address": address,
             "sender": sender,
             "is_from_me": bool(is_from_me),
             "message_type": "text" if not has_att else "text_with_attachment",

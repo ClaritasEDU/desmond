@@ -47,6 +47,7 @@ import os
 import secrets
 import sys
 import threading
+import time
 import urllib.parse
 import webbrowser
 from datetime import datetime, timedelta
@@ -137,9 +138,26 @@ def attach_calendar(parent, events, label):
     _log("info", "calendar attached", label=label, count=len(events))
 
 
+# The page polls /api/state every few seconds; scanning backup folders and
+# spawning `adb devices` on every poll is wasteful (and adb's first run can
+# take seconds starting its daemon), so detection is cached briefly. The
+# Rescan button forces a fresh scan.
+AVAIL_TTL_SECONDS = 8
+_AVAIL_CACHE = {"at": 0.0, "value": None}
+
+
+def _detect_available(force=False):
+    now = time.time()
+    if (force or _AVAIL_CACHE["value"] is None
+            or now - _AVAIL_CACHE["at"] > AVAIL_TTL_SECONDS):
+        _AVAIL_CACHE["value"] = sources.detect_available()
+        _AVAIL_CACHE["at"] = now
+    return _AVAIL_CACHE["value"]
+
+
 def wizard_state():
     """Everything the page needs to draw itself, refreshed on every poll."""
-    avail = sources.detect_available()
+    avail = _detect_available()
     return {
         "parents": _parent_names(),
         "messages": {
@@ -360,6 +378,14 @@ class Handler(BaseHTTPRequestHandler):
         return origin.rstrip("/") in (f"http://127.0.0.1:{PORT}",
                                       f"http://localhost:{PORT}")
 
+    def _host_ok(self):
+        """DNS-rebinding guard: a hostile page can point its own domain at
+        127.0.0.1 and then read GET responses (the Origin check only covers
+        POSTs). Serving only the loopback hostnames closes that."""
+        host = (self.headers.get("Host") or "").strip().lower()
+        return host in (f"127.0.0.1:{PORT}", f"localhost:{PORT}",
+                        "127.0.0.1", "localhost")
+
     def _json(self, obj, code=200):
         body = json.dumps(obj).encode()
         self.send_response(code)
@@ -388,6 +414,8 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- GET ----------------------------------------------------------------
     def do_GET(self):
+        if not self._host_ok():
+            return self._json({"ok": False, "error": "Bad host."}, 403)
         url = urllib.parse.urlsplit(self.path)
         if url.path == "/":
             return self._html(PAGE)
@@ -408,6 +436,8 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- POST ---------------------------------------------------------------
     def do_POST(self):
+        if not self._host_ok():
+            return self._json({"ok": False, "error": "Bad host."}, 403)
         if not self._same_origin():
             return self._json({"ok": False, "error": "Cross-site request "
                                "blocked."}, 403)
@@ -431,6 +461,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": True})
         if path == "/api/reset":
             reset_session()
+            return self._json({"ok": True})
+        if path == "/api/rescan":
+            _detect_available(force=True)
             return self._json({"ok": True})
 
         if path == "/api/source/upload":
@@ -753,7 +786,8 @@ function wire(){
       path:b.dataset.path},"err-messages"));
   document.querySelectorAll("[data-android]").forEach(b=>b.onclick=
     ()=>act(b,"/api/source/android",{parent:b.dataset.android},"err-messages"));
-  document.querySelectorAll("[data-rescan]").forEach(b=>b.onclick=refresh);
+  document.querySelectorAll("[data-rescan]").forEach(b=>b.onclick=
+    ()=>act(b,"/api/rescan",{},"err-messages"));
   document.querySelectorAll("[data-detach-m]").forEach(b=>b.onclick=
     ()=>act(b,"/api/source/detach",{parent:b.dataset.detachM,
       kind:"messages"},"err-messages"));

@@ -83,7 +83,8 @@ def main():
             return {"access_token": "AT", "refresh_token": "RT",
                     "id_token": fake_id_token("chris@example.com")}
         if "calendarList" in url:
-            return {"items": [{"id": "primary", "summary": "Family"}]}
+            return {"items": [{"id": "primary", "summary": "Family",
+                               "primary": True}]}
         if "/events" in url:
             return {"items": [
                 {"summary": e["title"],
@@ -150,6 +151,17 @@ def main():
                       {"parents": [{"name": "A"}, {"name": "B"}]},
                       headers={"Origin": "https://evil.example"})
     check(code == 403, "cross-site POST rejected")
+
+    # ---- DNS-rebinding guard: wrong Host header rejected on GET and POST ----
+    req = urllib.request.Request(base + "/api/state",
+                                 headers={"Host": "evil.example"})
+    try:
+        urllib.request.urlopen(req)
+        check(False, "rebound Host on GET rejected")
+    except urllib.error.HTTPError as e:
+        check(e.code == 403, "rebound Host on GET rejected")
+    code, resp = call("/api/reset", {}, headers={"Host": "evil.example:80"})
+    check(code == 403, "rebound Host on POST rejected")
 
     # ---- consent ----
     code, resp = call("/api/consent",
@@ -221,6 +233,10 @@ def main():
     check(code == 200 and os.path.isfile(os.path.join(outdir,
                                                       "FAMILY_GAPS.md")),
           "Save writes the archive where it said it would")
+
+    # ---- rescan forces a fresh device scan ----
+    code, resp = call("/api/rescan", {})
+    check(code == 200 and resp["ok"], "rescan endpoint answers")
 
     # ---- detach + reset ----
     code, resp = call("/api/source/detach", {"parent": "Kate",

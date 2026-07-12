@@ -239,6 +239,53 @@ def main():
     check("Dan (Soccer)" not in t5 and "+15125550142" not in t5,
           f"--same-thread merges differently-named threads (got {t5})")
 
+    # ---- same name, different person ("Mom" on each phone) ---------------------
+    def amsg(ts, conv, text, addr):
+        m = msg(ts, conv, conv, False, text)
+        m["address"] = addr
+        return m
+    chris_mom = export([{"name": "Mom", "type": "direct"}],
+                       [amsg("2026-07-08T10:00:00", "Mom",
+                             "Call me when free", "+15125551111")])
+    kate_mom = export([{"name": "Mom", "type": "direct"}],
+                      [amsg("2026-07-09T11:00:00", "Mom",
+                            "Sunday dinner?", "+15125552222")])
+    r_mom = fam.federate_family_data(
+        message_exports=[("Chris", chris_mom), ("Kate", kate_mom)],
+        consented=True)
+    check(len(r_mom["family"]["gaps"]["messages"]) == 0,
+          "two different Moms (numbers differ) don't fabricate message gaps")
+    # ...while a real shared counterpart (same shortcode) still diffs.
+    chris_sch = export([{"name": "School", "type": "direct"}],
+                       [amsg("2026-07-08T10:00:00", "School",
+                             "Early dismissal Friday", "22300")])
+    kate_sch = export([{"name": "School", "type": "direct"}],
+                      [amsg("2026-07-08T10:00:20", "School",
+                            "Early dismissal Friday", "22300"),
+                       amsg("2026-07-09T10:00:00", "School",
+                            "Bus late today", "22300")])
+    r_sch = fam.federate_family_data(
+        message_exports=[("Chris", chris_sch), ("Kate", kate_sch)],
+        consented=True)
+    g_sch = r_sch["family"]["gaps"]["messages"]
+    check(len(g_sch) == 1 and g_sch[0]["text"] == "Bus late today"
+          and g_sch[0]["missing_for"] == ["Chris"],
+          "same shortcode on both phones still produces the real gap")
+
+    # "Unknown" threads are never diffed (unidentifiable senders).
+    chris_unk = export([{"name": "Unknown", "type": "direct"}],
+                       [msg("2026-07-08T10:00:00", "Unknown", "Unknown",
+                            False, "who dis")])
+    kate_unk = export([{"name": "Unknown", "type": "direct"}],
+                      [msg("2026-07-09T10:00:00", "Unknown", "Unknown",
+                           False, "spam call follow-up")])
+    r_unk = fam.federate_family_data(
+        message_exports=[("Chris", chris_unk), ("Kate", kate_unk)],
+        consented=True)
+    g_unk = r_unk["family"]["gaps"]
+    check(not g_unk["messages"] and not g_unk["threads"],
+          "'Unknown' threads produce no gaps at all")
+
     # ---- rendering ---------------------------------------------------------------
     md = res["gaps_md"]
     check(md.startswith("# Family Coverage Gaps"), "gaps report renders")

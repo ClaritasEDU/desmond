@@ -305,7 +305,11 @@ def fetch_google_events(access_token, days_back=FETCH_DAYS_BACK,
                         "the account. (" + str(cal_list.get("error", "")) + ")")
     events = []
     for cal in cal_list.get("items", []):
-        if cal.get("selected") is False:
+        # Only calendars the account actually displays (plus the primary):
+        # the API omits selected=false, so an absent flag means hidden —
+        # pulling those drags in Holidays-style calendars only one parent
+        # subscribes to and floods the gap report.
+        if not (cal.get("selected") or cal.get("primary")):
             continue
         cal_name = cal.get("summaryOverride") or cal.get("summary") or "Calendar"
         page = None

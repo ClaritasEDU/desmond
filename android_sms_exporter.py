@@ -494,6 +494,7 @@ def build_export_data(messages):
             "day_of_week": timestamp.strftime("%A"),
             "conversation": conv_name,
             "conversation_type": "direct",  # Android doesn't distinguish easily
+            "address": msg.get('address', ''),
             "sender": msg['sender'],
             "is_from_me": msg['is_from_me'],
             "message_type": msg['message_type'],

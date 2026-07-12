@@ -135,6 +135,7 @@ Android (built: android_adb_exporter.py):
 import argparse
 import json
 import os
+import re
 import sys
 from datetime import datetime, timedelta
 
@@ -339,6 +340,18 @@ def _epoch(ts):
         return None
 
 
+def _norm_address(value):
+    """A phone number/email in comparable form (last 10 digits / lowercase
+    email), or None when there's nothing identifying."""
+    s = str(value or "").strip().lower()
+    if not s:
+        return None
+    if "@" in s:
+        return s
+    digits = re.sub(r"\D", "", s)
+    return digits[-10:] if len(digits) >= 7 else None
+
+
 def detect_message_gaps(message_exports, explicit_same=None):
     """Diff each parent's incoming messages against the other's.
 
@@ -387,6 +400,8 @@ def detect_message_gaps(message_exports, explicit_same=None):
         for msg in export.get("messages", []):
             conv = msg.get("conversation") or "Unknown"
             norm = _norm_name(conv)
+            if not norm or norm == "unknown":
+                continue    # unidentifiable senders can't be diffed honestly
             if (owner, norm) in couple:
                 continue
             key = alias.get((owner, norm), norm)
@@ -394,7 +409,11 @@ def detect_message_gaps(message_exports, explicit_same=None):
                 "name": conv,
                 "type": msg.get("conversation_type", "direct"),
                 "incoming": [],
+                "addresses": set(),
             })
+            addr = _norm_address(msg.get("address"))
+            if addr:
+                rec["addresses"].add(addr)
             if not msg.get("is_from_me"):
                 rec["incoming"].append(msg)
 
@@ -422,13 +441,24 @@ def detect_message_gaps(message_exports, explicit_same=None):
                     "last_message": stamps[-1],
                 })
                 continue
+            # Same NAME is not the same PERSON: when both sides know the
+            # counterpart's number/email and they don't overlap, it's two
+            # different people (each parent's own "Mom") — diffing them
+            # would fabricate gaps, so those matches are dropped.
+            verified = [o for o in have
+                        if not (rec["addresses"]
+                                and threads[o][key]["addresses"]
+                                and rec["addresses"].isdisjoint(
+                                    threads[o][key]["addresses"]))]
+            if not verified:
+                continue
             # Thread matched with at least one other parent: per-message diff.
             for msg in rec["incoming"]:
                 text = (msg.get("text") or "").strip()
                 if not text:
                     continue
                 ts = _epoch(msg.get("timestamp", ""))
-                missing = [o for o in have
+                missing = [o for o in verified
                            if not _received(threads[o][key]["incoming"], text, ts)]
                 if missing:
                     message_gaps.append({

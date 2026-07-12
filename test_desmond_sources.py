@@ -96,6 +96,9 @@ def main():
         check(len(dental) == 2 and dental[0]["sender"] == "Smile Dental"
               and dental[1]["sender"] == "Me",
               "direct thread named via contact lookup; senders right")
+        check(all(m["address"] == "+15125550100" for m in dental),
+              "direct messages carry the counterpart's address "
+              "(feeds the family differ's identity check)")
         group = next(m for m in msgs if m["conversation_type"] == "group")
         check(group["conversation"] == "Room 12 Parents",
               "group chat named from display_name")
