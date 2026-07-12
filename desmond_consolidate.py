@@ -12,31 +12,43 @@ Data sources (pick any combination)
 -----------------------------------
     messages   your existing Desmond export (messages.json) — run an exporter
                first if you don't have one
-    calendar   .ics files. Most people don't use Apple Calendar, so this is
-               built for the big three:
-                 • Google Calendar:  calendar.google.com → Settings →
-                   Import & export → Export (downloads a .zip of .ics files —
-                   point this tool at the .zip, it reads it directly)
-                 • Microsoft Outlook: Calendar → Settings → Export calendar
-                   (.ics), or File → Save Calendar in desktop Outlook
-                 • Apple Calendar:   File → Export → Export… (.ics)
+    calendar   ONLINE-FIRST: paste your calendar's private iCal address once
+               and every run fetches it fresh — no exporting, no .zip
+               shuffling. Most people don't use Apple Calendar, so this is
+               built for the big two:
+                 • Google Calendar:  calendar.google.com → ⚙ Settings → click
+                   your calendar (left sidebar) → "Integrate calendar" →
+                   copy "Secret address in iCal format"
+                 • Microsoft Outlook / 365: outlook.com → ⚙ Settings →
+                   Calendar → Shared calendars → "Publish a calendar" →
+                   copy the ICS link
+               (webcal:// links work too.) Exported .ics files / Google's
+               export .zip still work as an offline fallback, and Apple
+               Calendar exports (File → Export…) are supported.
     contacts   .vcf vCard files (iCloud contacts export, Google Contacts →
                Export → vCard, or Android Contacts → Share)
     calls      call-log XML from the "SMS Backup & Restore" Android app
 
-Everything runs locally. Nothing is uploaded anywhere.
+Everything is processed locally. The only network use is fetching calendar
+feed URLs YOU provide; the result never leaves your machine. Saved feed
+URLs are secret links — they're stored privately (chmod 600) in
+~/.desmond/calendar_feeds.json and never printed in full.
 
 Usage
 -----
     cd ~/desmond
     python3 desmond_consolidate.py                  # interactive: pick sources
     python3 desmond_consolidate.py --sources all
-    python3 desmond_consolidate.py --sources calendar
+    python3 desmond_consolidate.py --sources calendar \\
+        --calendar-url "https://calendar.google.com/calendar/ical/…/basic.ics" \\
+        --remember                                  # save the URL for next time
     python3 desmond_consolidate.py --sources calendar,contacts \\
-        --calendar ~/Downloads/mycalendar.ics.zip \\
-        --contacts ~/Downloads/contacts.vcf
+        --contacts ~/Downloads/contacts.vcf         # saved feeds used automatically
 
     # optional:
+    #   --calendar-url URL  private iCal feed (repeatable); --remember saves it
+    #   --calendar PATH     offline fallback: .ics file/folder or Google's .zip
+    #   --forget-calendar-urls   delete all saved feed URLs
     #   --messages DIR     Desmond export folder (auto-detected otherwise)
     #   --calls FILE       calls .xml from SMS Backup & Restore
     #   --out FILE         output path (default:
@@ -55,6 +67,8 @@ import json
 import os
 import quopri
 import sys
+import urllib.parse
+import urllib.request
 import xml.etree.ElementTree as ET
 import zipfile
 from collections import defaultdict
@@ -62,6 +76,9 @@ from datetime import datetime
 
 DEFAULT_OUT = os.path.expanduser(
     "~/Downloads/Desmond_Personal_Archive/PERSONAL_ARCHIVE.md")
+
+# Saved online calendar feeds (secret iCal URLs) — private to this user.
+FEEDS_CONFIG = os.path.expanduser("~/.desmond/calendar_feeds.json")
 
 SEARCH_DIRS = [os.path.expanduser(p) for p in
                ("~/Downloads", "~/Documents", "~/Desktop")]
@@ -165,6 +182,97 @@ def parse_ics(text, source_name=""):
     for ev in events:
         ev.setdefault("title", "(untitled)")
         ev["calendar"] = calendar_name or source_name or "calendar"
+    events.sort(key=lambda e: e["start"].isoformat())
+    return events
+
+
+def normalize_feed_url(url):
+    """Clean up a pasted calendar feed URL. Accepts webcal:// (what Outlook
+    hands out) and plain http(s). Returns None for anything that isn't a URL."""
+    url = (url or "").strip().strip('"').strip("'")
+    if not url:
+        return None
+    if url.lower().startswith("webcal://"):
+        url = "https://" + url[len("webcal://"):]
+    if not url.lower().startswith(("https://", "http://")):
+        return None
+    return url
+
+
+def _feed_label(url):
+    """A safe, printable name for a feed. The full URL is a SECRET (anyone
+    holding it can read the calendar), so never print more than the host."""
+    try:
+        return urllib.parse.urlsplit(url).hostname or "calendar feed"
+    except ValueError:
+        return "calendar feed"
+
+
+def load_saved_feeds():
+    """Previously remembered feed URLs (see save_feeds)."""
+    try:
+        with open(FEEDS_CONFIG, encoding="utf-8") as f:
+            data = json.load(f)
+        return [u for u in data.get("feeds", []) if isinstance(u, str) and u]
+    except Exception:
+        return []
+
+
+def save_feeds(urls):
+    """Remember feed URLs for future runs. The file holds secret links, so it
+    is written private-to-you (chmod 600)."""
+    urls = [u for u in dict.fromkeys(urls) if u]   # dedupe, keep order
+    os.makedirs(os.path.dirname(FEEDS_CONFIG), exist_ok=True)
+    tmp = FEEDS_CONFIG + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"feeds": urls}, f, indent=2)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, FEEDS_CONFIG)
+    return urls
+
+
+def forget_feeds():
+    """Delete every saved feed URL. Returns how many were removed."""
+    n = len(load_saved_feeds())
+    try:
+        os.remove(FEEDS_CONFIG)
+    except OSError:
+        pass
+    return n
+
+
+def fetch_calendar_feed(url, timeout=30):
+    """Download one iCal feed. Kept separate so tests (and apps) can stub it."""
+    req = urllib.request.Request(
+        url, headers={"User-Agent": "Desmond/1.0 (personal calendar export)"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read().decode("utf-8", "replace")
+
+
+def load_calendar_feeds(urls, verbose=True):
+    """Fetch events live from private iCal feed URLs (Google Calendar's
+    'Secret address in iCal format', Outlook's published ICS link)."""
+    events = []
+    for raw_url in urls:
+        url = normalize_feed_url(raw_url)
+        if not url:
+            print(f"   ⚠️  That doesn't look like a calendar address: "
+                  f"{raw_url[:40]!r}… (want an https:// or webcal:// link)")
+            continue
+        label = _feed_label(url)
+        try:
+            text = fetch_calendar_feed(url)
+        except Exception as e:
+            print(f"   ⚠️  Couldn't fetch the {label} feed: {e}")
+            print("      (Check the link is the SECRET/published iCal address "
+                  "and that you're online — or pass an exported .ics file "
+                  "with --calendar.)")
+            continue
+        got = parse_ics(text, label)
+        events.extend(got)
+        if verbose:
+            name = got[0]["calendar"] if got else label
+            print(f"   📅 {name} (online, {label}): {len(got)} events")
     events.sort(key=lambda e: e["start"].isoformat())
     return events
 
@@ -516,9 +624,12 @@ def _jsonable(obj):
 
 def consolidate(sources, calendar_paths=None, contacts_paths=None,
                 calls_path=None, messages_path=None, out_path=DEFAULT_OUT,
-                messages_full=False, write_json=False, verbose=True):
+                messages_full=False, write_json=False, verbose=True,
+                calendar_urls=None, use_saved_feeds=True):
     """Build the consolidated archive. `sources` is a list drawn from
-    ALL_SOURCES. Returns {"out_path": ..., "counts": {...}}."""
+    ALL_SOURCES. Calendar data comes from online feeds first (explicit
+    `calendar_urls` plus any saved ones), with .ics files/zips as fallback.
+    Returns {"out_path": ..., "counts": {...}}."""
     sections = {}
     counts = {}
     discovered = discover_sources()
@@ -535,16 +646,33 @@ def consolidate(sources, calendar_paths=None, contacts_paths=None,
                   "or pass --messages DIR. Skipping messages.")
 
     if "calendar" in sources:
-        paths = calendar_paths or discovered["calendar"]
-        if paths:
-            sections["calendar"] = load_calendars(paths, verbose=verbose)
-            counts["calendar"] = len(sections["calendar"])
+        events = []
+        urls = list(calendar_urls or [])
+        if use_saved_feeds:
+            urls += [u for u in load_saved_feeds() if u not in urls]
+        if urls:
+            events.extend(load_calendar_feeds(urls, verbose=verbose))
+        if calendar_paths:
+            # explicitly given files are always honored alongside feeds
+            events.extend(load_calendars(calendar_paths, verbose=verbose))
+        elif not events and discovered["calendar"]:
+            # no feeds produced anything — fall back to files found on disk
+            events.extend(load_calendars(discovered["calendar"], verbose=verbose))
+        if events:
+            events.sort(key=lambda e: e["start"].isoformat())
+            sections["calendar"] = events
+            counts["calendar"] = len(events)
         else:
-            print("   ⚠️  No .ics calendar files found in Downloads/Documents/"
-                  "Desktop. Export from Google Calendar (Settings → Import & "
-                  "export → Export), Outlook (Settings → Export calendar), or "
-                  "Apple Calendar (File → Export), then re-run or pass "
-                  "--calendar PATH. Skipping calendar.")
+            print("   ⚠️  No calendar events. Easiest: paste your calendar's "
+                  "private iCal address —")
+            print("      • Google Calendar: ⚙ Settings → your calendar → "
+                  "Integrate calendar → 'Secret address in iCal format'")
+            print("      • Outlook/Microsoft 365: ⚙ Settings → Calendar → "
+                  "Shared calendars → Publish a calendar → ICS link")
+            print('      then re-run:  python3 desmond_consolidate.py '
+                  '--sources calendar --calendar-url "PASTE_LINK" --remember')
+            print("      (Exported .ics files still work too: --calendar PATH.) "
+                  "Skipping calendar.")
 
     if "contacts" in sources:
         paths = contacts_paths or discovered["contacts"]
@@ -605,13 +733,17 @@ def _pick_sources_interactive():
     discovered = discover_sources()
     print("\nWhich data should go into the archive?")
     print()
+    saved_feeds = load_saved_feeds()
     for i, src in enumerate(ALL_SOURCES, 1):
         found = discovered[src]
         hint = (f"found: {os.path.basename(found[0])}"
                 + (f" (+{len(found) - 1} more)" if len(found) > 1 else "")
                 if found else "nothing auto-detected yet")
+        if src == "calendar" and saved_feeds:
+            hint = (f"{len(saved_feeds)} saved online feed(s)"
+                    + (f" + {len(found)} file(s)" if found else ""))
         label = {"messages": "Messages (your Desmond export)",
-                 "calendar": "Calendar (.ics — Google / Outlook / Apple)",
+                 "calendar": "Calendar (online: Google / Outlook feed, or .ics)",
                  "contacts": "Contacts (.vcf)",
                  "calls": "Call logs (Android backup XML)"}[src]
         print(f"  {i}. {label} — {hint}")
@@ -636,10 +768,23 @@ def main():
                         help="comma-separated: all, or any of "
                              "messages,calendar,contacts,calls "
                              "(omit for the interactive picker)")
+    parser.add_argument("--calendar-url", action="append", default=None,
+                        metavar="URL", dest="calendar_url",
+                        help="private iCal feed URL — Google Calendar's "
+                             "'Secret address in iCal format' or Outlook's "
+                             "published ICS link; webcal:// works (repeatable)")
+    parser.add_argument("--remember", action="store_true",
+                        help="save the --calendar-url link(s) so future runs "
+                             "fetch them automatically")
+    parser.add_argument("--forget-calendar-urls", action="store_true",
+                        help="delete all saved calendar feed URLs and exit")
+    parser.add_argument("--no-saved-feeds", action="store_true",
+                        help="ignore saved feed URLs for this run")
     parser.add_argument("--calendar", action="append", default=None,
                         metavar="PATH",
-                        help=".ics file, folder of .ics files, or the .zip "
-                             "Google Calendar exports (repeatable)")
+                        help="offline fallback: .ics file, folder of .ics "
+                             "files, or the .zip Google Calendar exports "
+                             "(repeatable)")
     parser.add_argument("--contacts", action="append", default=None,
                         metavar="PATH", help=".vcf file (repeatable)")
     parser.add_argument("--calls", default=None, metavar="PATH",
@@ -658,6 +803,17 @@ def main():
     print("   One Markdown file out of your personal data — processed "
           "locally, uploaded nowhere.")
 
+    if args.forget_calendar_urls:
+        n = forget_feeds()
+        print(f"\n   Forgot {n} saved calendar feed(s).")
+        sys.exit(0)
+
+    if args.calendar_url and args.remember:
+        good = [u for u in (normalize_feed_url(u) for u in args.calendar_url) if u]
+        saved = save_feeds(load_saved_feeds() + good)
+        print(f"   Remembered {len(good)} feed(s) ({len(saved)} saved total) "
+              "— future runs fetch them automatically.")
+
     if args.sources:
         wanted = args.sources.replace(" ", "").lower()
         sources = (list(ALL_SOURCES) if wanted == "all"
@@ -670,10 +826,36 @@ def main():
     else:
         sources = _pick_sources_interactive()
 
+        # Interactive + calendar chosen but nothing to read yet → offer the
+        # online path right here instead of failing with instructions later.
+        if ("calendar" in sources and not args.calendar_url
+                and not args.calendar and not load_saved_feeds()
+                and not discover_sources()["calendar"]):
+            print("\n   No calendar source yet. Paste your calendar's private"
+                  " iCal address:")
+            print("     • Google Calendar: ⚙ Settings → your calendar → "
+                  "Integrate calendar → 'Secret address in iCal format'")
+            print("     • Outlook/365: ⚙ Settings → Calendar → Shared "
+                  "calendars → Publish a calendar → ICS link")
+            pasted = input("   Address (or press Enter to skip calendar): ").strip()
+            url = normalize_feed_url(pasted)
+            if url:
+                args.calendar_url = [url]
+                keep = input("   Remember it for future runs? (Y/n): ").strip().lower()
+                if keep in ("", "y", "yes"):
+                    save_feeds(load_saved_feeds() + [url])
+                    print("   Saved (privately, chmod 600) — future runs "
+                          "fetch it automatically.")
+            elif pasted:
+                print("   That didn't look like an https:// or webcal:// "
+                      "link — skipping calendar this run.")
+
     print(f"\n   Sources: {', '.join(sources)}")
     result = consolidate(
         sources,
         calendar_paths=args.calendar,
+        calendar_urls=args.calendar_url,
+        use_saved_feeds=not args.no_saved_feeds,
         contacts_paths=args.contacts,
         calls_path=args.calls,
         messages_path=args.messages,

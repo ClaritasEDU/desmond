@@ -9,6 +9,68 @@ This file contains a complete history of Claude Code sessions for this repositor
 
 ---
 
+## 2026-07-12 (part 2) — Federation goes online-ready; calendars fetch live
+
+### What We Built
+1. **Federation refactored for the future online app** (app itself comes in a
+   later session): the entire merge is now a PURE in-memory function —
+   `federate_data(exports, consented=True, consent_records=[...])` — that
+   takes uploaded exports (validated via `parse_export()`, which accepts
+   bytes/str/dict) and returns `{"federated": dict, "summary_md": str,
+   "shared_transcripts": {title: md}}` with zero filesystem access. The
+   payload carries `"format": "desmond-federated/1"` and the app's
+   per-participant consent trail verbatim. The CLI/`federate()` is now a thin
+   file-writing wrapper — behavior unchanged.
+2. **Online calendar integration** — no more .zip shuffling. Consolidate now
+   fetches Google Calendar and Microsoft Outlook/365 **private iCal feed
+   URLs** live (Google: "Secret address in iCal format"; Outlook: published
+   ICS link; `webcal://` normalized). `--calendar-url URL` (repeatable) +
+   `--remember` stores links privately (chmod 600,
+   `~/.desmond/calendar_feeds.json`); saved feeds are fetched automatically
+   on every later run incl. `--sources all` and the interactive picker, which
+   also offers first-time setup when calendar is picked with nothing
+   configured. `--forget-calendar-urls` clears them; `--no-saved-feeds`
+   skips for one run. Feed URLs are secrets → only the hostname is ever
+   printed. Exported .ics/.zip files remain the offline fallback.
+
+### Technical Details
+- Chose secret-iCal-URL feeds over OAuth APIs deliberately: no Google
+  Cloud/Azure app registration, no tokens to refresh, stdlib `urllib` only —
+  paste one link once. (An OAuth integration can layer on later if needed.)
+- Verified end-to-end against a real HTTP server in-container: fetch →
+  remember → auto-reuse → forget, plus failure paths (unreachable feed,
+  garbage URL) degrade gracefully without killing the run.
+- Tests: federate suite 27 checks (in-memory path, consent records, format
+  version, JSON-serializability, upload rejection); consolidate suite 41
+  checks (URL normalization, secret redaction, config perms 0600,
+  stubbed-network fetch, saved-feed auto-use, forget). All 9 suites pass.
+
+### Current Status
+- ✅ All 9 suites green; new-feature CLIs exercised end-to-end in-container.
+- 🚧 Real-Mac verification still pending (unchanged), plus a real Google/
+  Outlook feed URL should be tried once on Chris's machine.
+
+### Branch Info
+- Branch: `claude/app-review-federation-export-bmony0` (same as part 1).
+
+### Decisions Made
+- Online calendar = private iCal feeds (no OAuth, no dependencies); saved
+  config is chmod 600 and URLs are never printed in full.
+- Online federation app will consume `federate_data()`/`parse_export()`;
+  consent stays a hard requirement at the library level, with the app's
+  consent trail embedded in the archive.
+
+### Next Steps
+1. Real-Mac smoke test (exporters + picker fixes from part 1).
+2. Paste a real Google Calendar secret address into
+   `desmond_consolidate.py --sources calendar --calendar-url … --remember`.
+3. Next session: build the online federation app on top of federate_data().
+
+### Questions/Blockers
+- Need the future session for the online app itself; library side is ready.
+
+---
+
 ## 2026-07-12 — Full code review + fixes, Federation, optional Consolidate mode
 
 ### What We Built

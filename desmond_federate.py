@@ -30,21 +30,33 @@ Command line
     #                      can't (A = conversation name in person 1's export,
     #                      B = conversation name in person 2's export)
 
-Using Desmond federation from another app
------------------------------------------
-Everything is importable — no external dependencies:
+Using Desmond federation from another app (including online apps)
+------------------------------------------------------------------
+Everything is importable — no external dependencies — and the whole merge is
+available as a PURE, in-memory function, so a web service can run it on
+uploaded exports without touching the filesystem:
 
-    from desmond_federate import load_export, federate
+    from desmond_federate import parse_export, federate_data
 
-    exports = [("Chris", load_export("/path/to/chris_export")),
-               ("Kate",  load_export("/path/to/kate_export"))]
-    result = federate(exports, "/path/to/output", consented=True)
-    # result: {"messages": ..., "deduplicated": ..., "output_dir": ...,
-    #          "shared_threads": [...], "participants": [...]}
+    # e.g. in an upload handler: each spouse uploaded their messages.json
+    exports = [("Chris", parse_export(chris_upload_bytes)),
+               ("Kate",  parse_export(kate_upload_bytes))]
+    result = federate_data(
+        exports, consented=True,
+        consent_records=[            # whatever consent trail your app collected
+            {"participant": "Chris", "agreed_at": "2026-07-12T10:00:00Z"},
+            {"participant": "Kate",  "agreed_at": "2026-07-12T10:03:00Z"},
+        ])
+    result["federated"]             # merged export (JSON-serializable dict)
+    result["summary_md"]            # FEDERATED_SUMMARY.md as a string
+    result["shared_transcripts"]    # {thread title: transcript .md string}
 
-`consented=True` is a required, explicit assertion by the calling app that
-every participant agreed to the merge; without it federate() raises
-ConsentError.
+For local/scripted use, federate() wraps federate_data() and writes the
+archive to disk (that's what the CLI calls). Either way, `consented=True` is
+a required, explicit assertion that every participant agreed to the merge;
+without it a ConsentError is raised. An online app should only set it after
+EACH participant has affirmatively opted in (and should pass its consent
+trail via consent_records so the archive carries the proof).
 
 What you get
 ------------
@@ -95,9 +107,25 @@ def load_export(path):
         )
     with open(json_path, encoding="utf-8") as f:
         data = json.load(f)
-    if "messages" not in data:
-        raise ValueError(f"{json_path!r} doesn't look like a Desmond export "
-                         "(no 'messages' key).")
+    return parse_export(data, source=json_path)
+
+
+def parse_export(data, source="upload"):
+    """Validate a Desmond export an app received some other way — an upload,
+    an API call, a database blob. Accepts a dict, JSON text, or JSON bytes and
+    returns the validated export dict. This is the entry point for ONLINE
+    apps: whatever transport delivered the user's messages.json, run it
+    through here before federating."""
+    if isinstance(data, (bytes, bytearray)):
+        data = data.decode("utf-8", "replace")
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"{source}: not valid JSON ({e})")
+    if not isinstance(data, dict) or not isinstance(data.get("messages"), list):
+        raise ValueError(f"{source} doesn't look like a Desmond export "
+                         "(no 'messages' list).")
     return data
 
 
@@ -169,16 +197,34 @@ def _dedup_key(msg):
 # Federation
 # ---------------------------------------------------------------------------
 
-def federate(exports, output_dir=DEFAULT_OUTPUT_DIR, consented=False,
-             explicit_shared=None, verbose=True):
-    """Merge multiple people's Desmond exports into one shared archive.
+def federate_data(exports, consented=False, explicit_shared=None,
+                  consent_records=None):
+    """The whole federation, IN MEMORY — nothing is read from or written to
+    disk. This is the function an online app calls:
 
-    exports:   list of (person_name, export_dict) — use load_export() to read
-               each folder. Two people is the designed case; more works.
-    consented: must be True — an explicit assertion that every participant
-               agreed to combine their exports. Raises ConsentError otherwise.
+        result = federate_data(
+            [("Chris", parse_export(chris_upload)),
+             ("Kate",  parse_export(kate_upload))],
+            consented=True,
+            consent_records=[
+                {"participant": "Chris", "agreed_at": "2026-07-12T10:00:00Z"},
+                {"participant": "Kate",  "agreed_at": "2026-07-12T10:03:00Z"},
+            ])
 
-    Returns a dict with counts and the output paths.
+    Returns:
+        {"federated":          the merged export dict (JSON-serializable),
+         "summary_md":         FEDERATED_SUMMARY.md as a string,
+         "shared_transcripts": {thread title: transcript .md string}}
+
+    exports:         list of (person_name, export_dict) — validate uploads
+                     with parse_export() first. Two people is the designed
+                     case; more works.
+    consented:       must be True — the caller's explicit assertion that every
+                     participant agreed. Raises ConsentError otherwise.
+    consent_records: optional per-participant acknowledgements (any
+                     JSON-serializable shape the app collected — names,
+                     timestamps, checkbox ids). Stored verbatim in the result
+                     so the archive carries its own consent trail.
     """
     if not consented:
         raise ConsentError(
@@ -188,9 +234,6 @@ def federate(exports, output_dir=DEFAULT_OUTPUT_DIR, consented=False,
         )
     if len(exports) < 2:
         raise ValueError("Federation needs at least two exports.")
-
-    output_dir = os.path.expanduser(output_dir)
-    os.makedirs(output_dir, exist_ok=True)
 
     threads = detect_shared_threads(exports, explicit=explicit_shared)
     # (owner_name, conv_name) -> thread record, for O(1) lookup per message
@@ -260,14 +303,18 @@ def federate(exports, output_dir=DEFAULT_OUTPUT_DIR, consented=False,
             meta["owners"].append(m["owner"])
 
     participants = [name for name, _ in exports]
+    consent = {
+        "confirmed": True,
+        "note": "Each participant exported their own data and agreed to "
+                "combine it into this shared archive.",
+    }
+    if consent_records:
+        consent["records"] = consent_records
     federated = {
+        "format": "desmond-federated/1",
         "federated_by": "desmond_federate.py",
         "participants": participants,
-        "consent": {
-            "confirmed": True,
-            "note": "Each participant exported their own data and agreed to "
-                    "combine it into this shared archive.",
-        },
+        "consent": consent,
         "total_messages": len(merged),
         "deduplicated": deduplicated,
         "shared_threads": [t["title"] for t in threads],
@@ -276,30 +323,71 @@ def federate(exports, output_dir=DEFAULT_OUTPUT_DIR, consented=False,
         "messages": merged,
     }
 
+    per_export = [(name, len(export.get("messages", [])),
+                   len(export.get("conversations", [])))
+                  for name, export in exports]
+    return {
+        "federated": federated,
+        "summary_md": _render_summary(federated, per_export),
+        "shared_transcripts": {t["title"]: _render_shared_transcript(t["title"], merged)
+                               for t in threads},
+    }
+
+
+def federate(exports, output_dir=DEFAULT_OUTPUT_DIR, consented=False,
+             explicit_shared=None, verbose=True, consent_records=None):
+    """Merge multiple people's Desmond exports and write the shared archive to
+    disk (the CLI path). All the logic lives in federate_data() — use that
+    directly from an online app.
+
+    Returns a dict with counts and the output paths.
+    """
+    data = federate_data(exports, consented=consented,
+                         explicit_shared=explicit_shared,
+                         consent_records=consent_records)
+    federated = data["federated"]
+    participants = federated["participants"]
+    merged = federated["messages"]
+
+    output_dir = os.path.expanduser(output_dir)
+    os.makedirs(output_dir, exist_ok=True)
+
     json_path = os.path.join(output_dir, "federated.json")
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(federated, f, indent=2, ensure_ascii=False)
 
     csv_path = _write_csv(output_dir, merged)
-    summary_path = _write_summary(output_dir, federated, exports)
-    shared_paths = [_write_shared_transcript(output_dir, t, merged)
-                    for t in threads]
+
+    summary_path = os.path.join(output_dir, "FEDERATED_SUMMARY.md")
+    with open(summary_path, "w", encoding="utf-8") as f:
+        f.write(data["summary_md"])
+
+    shared_dir = os.path.join(output_dir, "shared")
+    shared_paths = []
+    for title, md in data["shared_transcripts"].items():
+        os.makedirs(shared_dir, exist_ok=True)
+        path = os.path.join(shared_dir,
+                            _safe_filename(title.replace(" ", "_")) + ".md")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(md)
+        shared_paths.append(path)
 
     if verbose:
         print(f"\n🤝 Federated {len(exports)} exports "
               f"({' + '.join(participants)})")
         print(f"   Messages: {len(merged):,} "
-              f"({deduplicated:,} duplicates merged from the shared thread)")
-        for t in threads:
-            print(f"   Shared thread: {t['title']}")
+              f"({federated['deduplicated']:,} duplicates merged from the "
+              "shared thread)")
+        for title in federated["shared_threads"]:
+            print(f"   Shared thread: {title}")
         print(f"   → {output_dir}")
 
     return {
         "output_dir": output_dir,
         "participants": participants,
         "messages": len(merged),
-        "deduplicated": deduplicated,
-        "shared_threads": [t["title"] for t in threads],
+        "deduplicated": federated["deduplicated"],
+        "shared_threads": federated["shared_threads"],
         "json_path": json_path,
         "csv_path": csv_path,
         "summary_path": summary_path,
@@ -326,7 +414,8 @@ def _write_csv(output_dir, merged):
     return csv_path
 
 
-def _write_summary(output_dir, federated, exports):
+def _render_summary(federated, per_export):
+    """FEDERATED_SUMMARY.md as a string. per_export: [(name, n_msgs, n_convs)]."""
     lines = ["# Federated Archive Summary", ""]
     lines.append(f"**Participants:** {', '.join(federated['participants'])}")
     lines.append(f"**Total messages:** {federated['total_messages']:,}")
@@ -337,9 +426,8 @@ def _write_summary(output_dir, federated, exports):
     lines.append("")
     lines.append("## Per person")
     lines.append("")
-    for name, export in exports:
-        lines.append(f"- **{name}** — {len(export.get('messages', [])):,} "
-                     f"messages, {len(export.get('conversations', [])):,} "
+    for name, n_msgs, n_convs in per_export:
+        lines.append(f"- **{name}** — {n_msgs:,} messages, {n_convs:,} "
                      "conversations contributed")
     if federated["shared_threads"]:
         lines.append("")
@@ -367,11 +455,7 @@ def _write_summary(output_dir, federated, exports):
     lines.append("---")
     lines.append("*This archive contains both participants' message history — "
                  "store it as carefully as you'd store either one alone.*")
-
-    path = os.path.join(output_dir, "FEDERATED_SUMMARY.md")
-    with open(path, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
-    return path
+    return "\n".join(lines) + "\n"
 
 
 def _safe_filename(name):
@@ -379,11 +463,9 @@ def _safe_filename(name):
                    for ch in name).strip() or "shared"
 
 
-def _write_shared_transcript(output_dir, thread, merged):
-    """The couple's own conversation, rebuilt from both phones, date-ordered."""
-    shared_dir = os.path.join(output_dir, "shared")
-    os.makedirs(shared_dir, exist_ok=True)
-    title = thread["title"]
+def _render_shared_transcript(title, merged):
+    """The couple's own conversation, rebuilt from both phones, date-ordered.
+    Returns the transcript .md as a string."""
     msgs = [m for m in merged if m.get("conversation") == title]
 
     lines = [f"# {title}", ""]
@@ -400,11 +482,7 @@ def _write_shared_transcript(output_dir, thread, merged):
         text = m.get("text") or ""
         lines.append(f"- **{m.get('time', '')[:5]} {m.get('sender')}:** "
                      f"{both}{text}")
-
-    path = os.path.join(shared_dir, _safe_filename(title.replace(" ", "_")) + ".md")
-    with open(path, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
-    return path
+    return "\n".join(lines) + "\n"
 
 
 # ---------------------------------------------------------------------------

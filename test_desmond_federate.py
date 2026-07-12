@@ -153,6 +153,41 @@ def main():
         check(res2["deduplicated"] == 1 and res2["messages"] == 1,
               "explicit --shared mapping merges nickname threads")
 
+        # ---- the ONLINE-APP path: pure in-memory, uploads in, strings out ----
+        chris_upload = open(os.path.join(chris_dir, "messages.json"), "rb").read()
+        kate_upload = open(os.path.join(kate_dir, "messages.json")).read()
+        mem = fed.federate_data(
+            [("Chris", fed.parse_export(chris_upload)),     # bytes upload
+             ("Kate", fed.parse_export(kate_upload))],      # str upload
+            consented=True,
+            consent_records=[
+                {"participant": "Chris", "agreed_at": "2026-07-12T10:00:00Z"},
+                {"participant": "Kate", "agreed_at": "2026-07-12T10:03:00Z"},
+            ])
+        check(mem["federated"]["total_messages"] == 4,
+              "federate_data merges in memory (no disk writes)")
+        check(mem["federated"]["format"] == "desmond-federated/1",
+              "federated payload carries a format version")
+        check(len(mem["federated"]["consent"].get("records", [])) == 2,
+              "consent trail from the app is stored in the archive")
+        check("Grab milk please" in mem["shared_transcripts"]["Chris and Kate"],
+              "shared transcript returned as a string for the app to render")
+        check(mem["summary_md"].startswith("# Federated Archive Summary"),
+              "summary returned as a string")
+        json.dumps(mem["federated"])   # must be JSON-serializable end to end
+        check(True, "federate_data result is JSON-serializable")
+        try:
+            fed.parse_export(b"not json at all")
+            check(False, "parse_export rejects a bad upload")
+        except ValueError:
+            check(True, "parse_export rejects a bad upload")
+        try:
+            fed.federate_data([("A", {"messages": []}), ("B", {"messages": []})],
+                              consented=False)
+            check(False, "federate_data without consent raises ConsentError")
+        except fed.ConsentError:
+            check(True, "federate_data without consent raises ConsentError")
+
     print()
     if failures:
         print(f"{len(failures)} test(s) FAILED")

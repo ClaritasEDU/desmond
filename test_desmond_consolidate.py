@@ -210,6 +210,67 @@ def main():
         check("Grab milk please" in full_md,
               "--messages-full inlines the actual messages")
 
+        # --- ONLINE calendar feeds (network stubbed) --------------------------
+        check(dc.normalize_feed_url("webcal://outlook.live.com/owa/cal/x.ics")
+              == "https://outlook.live.com/owa/cal/x.ics",
+              "webcal:// normalized to https://")
+        check(dc.normalize_feed_url(' "https://calendar.google.com/x.ics" ')
+              == "https://calendar.google.com/x.ics",
+              "pasted quotes/whitespace stripped")
+        check(dc.normalize_feed_url("not a url") is None
+              and dc.normalize_feed_url("") is None,
+              "garbage rejected as a feed URL")
+        check(dc._feed_label("https://calendar.google.com/secret-token/basic.ics")
+              == "calendar.google.com",
+              "feed label never exposes the secret path")
+
+        dc.FEEDS_CONFIG = os.path.join(tmp, "dotdesmond", "calendar_feeds.json")
+        dc.save_feeds(["https://calendar.google.com/a.ics",
+                       "https://calendar.google.com/a.ics",   # duplicate
+                       "https://outlook.live.com/b.ics"])
+        check(dc.load_saved_feeds() == ["https://calendar.google.com/a.ics",
+                                        "https://outlook.live.com/b.ics"],
+              "feeds saved, deduped, and reloaded")
+        mode = os.stat(dc.FEEDS_CONFIG).st_mode & 0o777
+        check(mode == 0o600, f"feed config is private (chmod 600, got {oct(mode)})")
+
+        real_fetch = dc.fetch_calendar_feed
+        def fake_fetch(url, timeout=30):
+            if "outlook" in url:
+                raise OSError("network unreachable")
+            return GOOGLE_ICS
+        dc.fetch_calendar_feed = fake_fetch
+        try:
+            events_online = dc.load_calendar_feeds(
+                ["https://calendar.google.com/a.ics",
+                 "https://outlook.live.com/b.ics",       # fails, must not crash
+                 "totally-not-a-url"], verbose=False)
+            check(len(events_online) == 2,
+                  f"online feed fetched + parsed, bad feeds skipped (got {len(events_online)})")
+
+            online_md = os.path.join(tmp, "online.md")
+            res_online = dc.consolidate(
+                ["calendar"],
+                calendar_urls=["https://calendar.google.com/a.ics"],
+                use_saved_feeds=False, out_path=online_md, verbose=False)
+            check(res_online is not None
+                  and "Dentist appointment, kids"
+                  in open(online_md, encoding="utf-8").read(),
+                  "consolidate builds the archive from an online feed (no files)")
+
+            # saved feeds are picked up automatically when none passed
+            dc.save_feeds(["https://calendar.google.com/a.ics"])
+            saved_md = os.path.join(tmp, "saved.md")
+            res_saved = dc.consolidate(["calendar"], out_path=saved_md,
+                                       verbose=False)
+            check(res_saved is not None
+                  and res_saved["counts"].get("calendar") == 2,
+                  "saved feed URLs are used automatically")
+        finally:
+            dc.fetch_calendar_feed = real_fetch
+        check(dc.forget_feeds() == 1 and dc.load_saved_feeds() == [],
+              "forget_feeds clears the saved URLs")
+
         # --- graceful empty ----------------------------------------------------
         res_none = dc.consolidate(["calls"], calls_path=None,
                                   out_path=os.path.join(tmp, "none.md"),

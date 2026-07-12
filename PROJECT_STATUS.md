@@ -41,15 +41,24 @@ contacts + calls). Text messages remain the default use case.
   (no more OOM), reads the newest messages file AND the newest calls file,
   survives truncated XML, unknown numbers no longer merge into one
   "(Unknown)" thread, failed/draft messages counted as outgoing.
-- **NEW: Federation** (`desmond_federate.py`) — merges two people's exports
-  (e.g. husband + wife) into `Desmond_Federated_Archive/` with the mutual
-  thread deduplicated and rebuilt from both phones. Consent enforced;
-  importable by other apps (`federate(..., consented=True)`); stdlib only.
-- **NEW: Optional consolidate mode** (`desmond_consolidate.py`) — ONE
-  `PERSONAL_ARCHIVE.md` from selectable sources: messages, calendar (.ics —
-  Google Calendar incl. its .zip export, Microsoft Outlook, Apple Calendar),
-  contacts (.vcf), call logs (Android). Interactive picker or `--sources`;
-  NOT part of any default flow.
+- **NEW: Federation, online-app-ready** (`desmond_federate.py`) — merges two
+  people's exports (e.g. husband + wife) with the mutual thread deduplicated
+  and rebuilt from both phones; consent enforced. The whole merge is a pure
+  in-memory API for the upcoming online app: `parse_export()` validates
+  uploads (bytes/str/dict), `federate_data(..., consented=True,
+  consent_records=[...])` returns the merged archive + rendered markdown as
+  strings, no filesystem; payload versioned `desmond-federated/1`. CLI
+  unchanged (writes `Desmond_Federated_Archive/`). Stdlib only.
+- **NEW: Optional consolidate mode with ONLINE calendars**
+  (`desmond_consolidate.py`) — ONE `PERSONAL_ARCHIVE.md` from selectable
+  sources: messages, calendar, contacts (.vcf), call logs (Android).
+  Calendar is online-first: paste your **Google Calendar secret iCal
+  address** or **Outlook published ICS link** once (`--calendar-url` +
+  `--remember`, or the interactive prompt) and every run fetches it live —
+  no .zip export dance. Links stored chmod-600 in
+  `~/.desmond/calendar_feeds.json`, never printed in full;
+  `--forget-calendar-urls` clears. Exported .ics/.zip files remain the
+  offline fallback. NOT part of any default flow.
 - **Web setup guide** (`index.html`) — navigation bug fixed (intro cards were
   permanently hidden), plus `desmond.sh` sync-watcher fixes (real 12-min
   stall window, hard error when chat.db is unreadable instead of a fake
@@ -71,24 +80,27 @@ contacts + calls). Text messages remain the default use case.
 ## Next Steps
 1. On the Mac: `cd ~/desmond && git pull`, run `python3 desmond_export.py`
    and the picker — confirm the review fixes against the real database.
-2. Try `python3 desmond_consolidate.py` with a real Google Calendar export
-   (.zip) and an iCloud contacts .vcf.
-3. When both of your exports exist, try
-   `python3 desmond_federate.py "Chris=..." "Kate=..."`.
+2. Connect a real calendar: `python3 desmond_consolidate.py --sources
+   calendar --calendar-url "SECRET_ICAL_LINK" --remember` (Google: Settings →
+   Integrate calendar → Secret address; Outlook: Publish a calendar → ICS).
+3. Next session: build the online federation app on top of
+   `federate_data()` / `parse_export()` (library side is ready).
 4. Merge `claude/app-review-federation-export-bmony0` to main; delete branch.
 
 ## Blockers
 - Real-Mac verification (build container has no Messages DB, Drive, or GUI).
 
 ## Last Session
-- **Date:** 2026-07-12
+- **Date:** 2026-07-12 (two parts, same branch)
 - **Branch:** `claude/app-review-federation-export-bmony0`
-- **Summary:** Full-repo code review via 4 parallel review passes; fixed all
-  confirmed critical/major findings (never-written messages.json state bug on
-  Mac+Windows, iOS 10+ backup layout, verify-lies-about-Drive, incremental
-  state skipping attachments, picker CSRF/XSS/CSV-injection, Android OOM +
-  calls-file handling, desmond.sh false "complete", and more). Built
-  `desmond_federate.py` (consent-based two-person archive merge, importable
-  by other apps) and `desmond_consolidate.py` (optional one-file .md personal
-  archive with selectable sources incl. Google/Outlook calendar .ics).
-  Added 2 new test suites; all 9 suites pass.
+- **Summary:** Part 1 — full-repo code review via 4 parallel review passes;
+  fixed all confirmed critical/major findings (never-written messages.json
+  state bug on Mac+Windows, iOS 10+ backup layout, verify-lies-about-Drive,
+  incremental state skipping attachments, picker CSRF/XSS/CSV-injection,
+  Android OOM + calls-file handling, desmond.sh false "complete", and more);
+  built federation + optional consolidate mode with 2 new test suites.
+  Part 2 — refactored federation into a pure in-memory API
+  (`federate_data`/`parse_export` + consent trail) ready for the online
+  federation app coming in a future session, and made calendar integration
+  online-first: Google/Outlook private iCal feed URLs fetched live,
+  remembered securely (chmod 600), no .zip exports needed. All 9 suites pass.
