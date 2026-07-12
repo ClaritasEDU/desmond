@@ -525,8 +525,8 @@ files (that's what the CLI does).
 
 Family coordination breaks in one specific way: the dentist texts one parent
 about the kid's appointment and the other parent never hears about it; the
-school event lands on one calendar but not the other. `desmond_family.py`
-federates **both parents' messages AND calendars** and then does what no
+school event lands on one calendar but not the other. Family federation
+combines **both parents' messages AND calendars** and then does what no
 single-person export can — it **diffs the two views** and reports the blind
 spots:
 
@@ -535,59 +535,93 @@ spots:
 - 📥 **whole threads that only ever talk to one of you** (the dentist, the
   coach, the school office)
 
+### ⭐ The easy way: the web wizard (no files, no exports)
+
+```bash
+cd ~/desmond
+python3 desmond_family_web.py
+```
+
+Your browser opens a private page served only on this computer. Four steps:
+
+1. **Names + consent** — both parents agree on screen; the consent trail is
+   embedded in the result.
+2. **Messages — plug the phone in, that's it:**
+   - *Messages on this Mac* — read directly, nothing to plug in
+   - *iPhone* — plug it in, make/refresh a local backup when the page asks
+     (Finder / iTunes / Apple Devices, encryption unticked); the wizard
+     finds and reads it in place
+   - *Android* — plug it in with USB debugging on (the page shows the
+     60-second setup); messages are read live over the cable
+   - or drop a file on the page (a Desmond `messages.json`, or an SMS
+     Backup & Restore `.xml` straight off the phone's storage)
+   **One parent on iPhone and one on Android works** — every source lands
+   in the same shape before the diff.
+3. **Calendars — sign in, don't paste links:** each parent clicks
+   **Connect Google** or **Connect Microsoft/Outlook** and signs in. A
+   paste-a-link fallback hides under "Advanced" for iCloud published
+   calendars.
+4. **The gap report renders on the page.** Nothing is written to disk
+   unless you click **Save archive**; quitting the terminal forgets
+   everything.
+
+**One-time developer setup for calendar sign-in** (you, once — not each
+parent): register the app with Google and Microsoft and drop the client IDs
+into `~/.desmond/oauth_clients.json`. The exact click-by-click steps are at
+the top of `desmond_calendar_auth.py`; until it's done, the wizard shows
+those steps and the link fallback still works.
+
+### The scripted way (CLI, uses export files)
+
 ```bash
 cd ~/desmond
 python3 desmond_family.py \
     "Chris=~/Downloads/iMessages_Export" \
     "Kate=/path/to/kates_export" \
     --calendar "Chris=https://calendar.google.com/calendar/ical/…/basic.ics" \
-    --calendar "Kate=webcal://outlook.office365.com/owa/calendar/…/calendar.ics"
+    --calendar "Kate=webcal://…"
 ```
 
-- **Messages** come from each parent's finished Desmond export (run
-  `desmond_export.py` or an exporter first). Either half is optional —
-  calendars only, messages only, or both.
-- **Calendars** come straight from each parent's private iCal link (Google
-  Calendar "Secret address", Outlook/365 published ICS, iCloud published
-  `webcal://`) — same links consolidate mode uses — or exported `.ics` files.
-- **Consent first**, same contract as federation: the tool confirms both
-  people agreed before combining anything (`--consented` for scripts).
-- **Low-noise by design:** identical texts within 5 minutes count as
-  "both got it" (carriers lag); same-day/same-title events match even when
-  the two calendars disagree on the minute; the default window is the last
-  30 days + everything upcoming (`--since YYYY-MM-DD` or `--all` to widen,
-  `--keyword dentist` to narrow). `--same-thread "Dan (Soccer)=+1512555…"`
-  tells the differ two differently-saved contacts are the same person.
-
-**What you get:** `Desmond_Family_Archive/` with **`FAMILY_GAPS.md`** (the
-point — what only one of you has), `family.json`
+Writes `Desmond_Family_Archive/` with **`FAMILY_GAPS.md`**, `family.json`
 (format `desmond-family/1`), `FAMILY_SUMMARY.md`, and the couple's merged
-thread under `shared/`.
+thread under `shared/`. `--since` / `--all` / `--keyword` /
+`--same-thread "Dan (Soccer)=+1512555…"` control the report.
 
-**For apps (this is the ParentPoint hook):** the whole federation + diff is
-a pure in-memory function — no filesystem, no printing:
+### How it stays low-noise
+
+Identical texts within 5 minutes count as "both got it" (carriers lag);
+same-day/same-title events match even when the two calendars disagree on
+the minute; the default window is the last 30 days + everything upcoming.
+Consent is enforced at the library level — nothing merges until every
+participant has agreed.
+
+### For apps (this is the ParentPoint hook)
+
+The whole pipeline is pure, in-memory functions — no filesystem, no
+printing; the web wizard is just a thin local UI over them:
 
 ```python
+from desmond_sources import parse_upload            # or read_* readers
+from desmond_calendar_auth import fetch_calendar_events
 from desmond_family import parse_calendar, federate_family_data
-from desmond_federate import parse_export
 
 result = federate_family_data(
-    message_exports=[("Chris", parse_export(chris_upload)),
-                     ("Kate",  parse_export(kate_upload))],
-    calendar_exports=[("Chris", parse_calendar(chris_ics_text)),
-                      ("Kate",  parse_calendar(kate_ics_text))],
+    message_exports=[("Chris", parse_upload(chris_bytes, "messages.json")),
+                     ("Kate",  parse_upload(kate_xml, "sms.xml"))],
+    calendar_exports=[("Chris", parse_calendar(google_events, "google")),
+                      ("Kate",  parse_calendar(outlook_events, "microsoft"))],
     consented=True, consent_records=[…], since="2026-06-01")
 
 result["family"]["gaps"]   # structured gap lists: calendar/messages/threads
 result["gaps_md"]          # FAMILY_GAPS.md as a string, ready to render
 ```
 
-**iPhone today / Android tomorrow:**
+### Platform truth table
 
-| Signal | iPhone (built now) | Android (future notes) |
-|--------|--------------------|------------------------|
-| Texts | iMessage/SMS exporters (Mac live, Windows from backup) — appointment reminders almost always arrive as SMS | `android_sms_exporter.py` output federates today; **RCS chats are NOT in SMS Backup & Restore XML** — needs a future exporter |
-| Calendar | Private iCal links (Google/Outlook/iCloud) — phone-agnostic, fresh every run | Identical — nothing new needed |
+| Signal | iPhone | Android |
+|--------|--------|---------|
+| Texts | This Mac's Messages read directly; any other iPhone plugs in and its local backup is read in place | **Read live over USB** (`android_adb_exporter.py`, USB debugging) or SMS Backup & Restore XML dropped on the page. **RCS chats can't be read by any tool without root** — automated reminders are SMS and ARE captured |
+| Calendar | Google/Microsoft **sign-in** (`desmond_calendar_auth.py`); iCloud published-link fallback | Identical — calendars are account-based, not phone-based |
 | App notifications | **Not possible** — iOS has no API to read other apps' notifications; texts + calendar are the federable signals | `NotificationListenerService` can capture school/pharmacy/team app notifications with user permission — a future `android_notification_exporter.py` emitting the standard export shape would federate with zero changes here |
 | Calls | — | `calls.xml` already exported; a "missed the school's call" gap could reuse the same differ |
 

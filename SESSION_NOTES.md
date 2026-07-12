@@ -9,6 +9,102 @@ This file contains a complete history of Claude Code sessions for this repositor
 
 ---
 
+## 2026-07-12 (part 4) — No files: the family web wizard, Android over USB, calendar sign-in
+
+### What We Built
+Requirement shift mid-session: no downloads, no export files, no pasted
+calendar links — plug the phone into the computer, sign in for calendars,
+see the gaps in the browser. Also: full Android support, including a MIXED
+household (one parent iPhone + one Android). All in desmond; parentpoint
+untouched (another branch is being resolved there first).
+
+1. **`desmond_family_web.py` (NEW)** — `python3 desmond_family_web.py`
+   opens a private local page (127.0.0.1 only). Four steps: names+consent
+   (trail embedded in the result) → messages (per parent: read this Mac's
+   Messages / read a plugged-in iPhone's local backup in place / read a
+   plugged-in Android live over USB / drop a messages.json or SMS Backup &
+   Restore XML on the page) → calendars (Connect Google / Connect
+   Microsoft sign-in buttons; saved accounts reconnect one-click; advanced
+   link fallback for iCloud) → gap report rendered on the page.
+   **Everything in memory; nothing on disk unless "Save archive" is
+   clicked.** Same-origin checks like the picker; PII-safe RunLogger.
+2. **`android_adb_exporter.py` (NEW)** — reads SMS/MMS-text straight off a
+   USB-connected Android phone via `adb shell content query` (read-only,
+   nothing installed on the phone). Contact names resolved from the
+   phone's own address book; drafts skipped; multi-line/comma bodies
+   parsed correctly; human fix-it errors for unauthorized/missing phones
+   and locked-down USB modes. RCS limitation documented (unreadable
+   without root by ANY method; SMS reminders are captured).
+3. **`desmond_sources.py` (NEW)** — every message source behind one
+   in-memory API returning the standard export shape: `read_mac_messages`
+   (chat.db direct), `read_iphone_backup` (Finder/iTunes backups, Mac AND
+   Windows locations, iOS-10+ sharded layout, encrypted-backup detection
+   with the untick-encryption hint), `read_android_usb`, `parse_upload`
+   (json/xml sniffing), `detect_available` (drives the wizard's buttons).
+   Tapbacks skipped so they can't fake message gaps.
+4. **`desmond_calendar_auth.py` (NEW)** — calendar reading via sign-in:
+   Google OAuth (loopback redirect + PKCE through the wizard's own server)
+   and Microsoft Graph (device-code flow — type a short code on any
+   device). Tokens cached chmod-600 keyed by account email for one-click
+   reuse; events normalized to the family event shape; iCal links demoted
+   to fallback. One-time app-registration steps (Google Cloud Console /
+   Azure) documented click-by-click in the module docstring; the wizard
+   shows them until client IDs exist in ~/.desmond/oauth_clients.json.
+5. **`android_sms_exporter.py`** — refactored: `parse_backup_bytes()`
+   (streaming parse of uploaded XML, no filesystem) +
+   `build_export_data()` (pure export builder); `export_ai_ready()` now
+   wraps it, file outputs unchanged.
+
+### Technical Details
+- Mixed household proven in tests: one parent's iPhone-shaped export + the
+  other's Android XML federate and diff correctly, couple thread deduped
+  across platforms.
+- adb row parsing survives commas AND newlines inside message bodies by
+  projecting the free-text column last.
+- OAuth HTTP goes through one injectable funnel (`_http`, late-bound) —
+  tests and future ParentPoint code stub the network in one place. Found
+  and fixed a default-arg early-binding bug there; also fixed source
+  endpoints reading data before the consent check.
+- New suites: adb (17 checks), sources (17), calendar auth (23), web
+  wizard end-to-end over real HTTP (25 — incl. consent gating, cross-site
+  POST rejection, nothing-on-disk-until-Save). **All 12 suites pass.**
+
+### Current Status
+- ✅ All 12 test suites green; wizard boot-checked; wizard driven
+  end-to-end over HTTP in-container (stubbed providers/phones).
+- 🚧 Real-device runs pending: a real iPhone backup, a real Android over
+  adb, and real Google/Microsoft sign-ins need Chris's machine + the
+  one-time app registrations.
+
+### Branch Info
+- Branch: `claude/desmond-parentpoint-federation-qsqif6` (parts 3+4).
+
+### Decisions Made
+- "Web interface with phone connected to computer" = local wizard server,
+  because no hosted website can read a USB-connected phone; the wizard is
+  also the reference client for the pure pipeline ParentPoint will reuse.
+- Android live-read via adb/USB debugging chosen over requiring the SMS
+  Backup & Restore app; the XML drop stays as the no-cable path.
+- Google = loopback OAuth (Calendar scope disallows device flow);
+  Microsoft = device code (no redirect plumbing). Both need a one-time
+  free app registration by us, never by parents.
+- iCloud calendar: no third-party OAuth API exists → published-link
+  fallback under "Advanced".
+
+### Next Steps
+1. Do the two app registrations (steps in desmond_calendar_auth.py),
+   drop IDs into ~/.desmond/oauth_clients.json, run the wizard for real.
+2. Real-device pass: iPhone backup read + Android adb read on Chris's
+   machine.
+3. When the parentpoint branch is resolved: wire ParentPoint to
+   desmond_sources + desmond_calendar_auth + federate_family_data.
+
+### Questions/Blockers
+- Parentpoint intentionally untouched this session (branch conflict there).
+- OAuth Connect buttons stay hidden until the one-time registrations exist.
+
+---
+
 ## 2026-07-12 (part 3) — Family federation: the ParentPoint coverage-gap engine
 
 ### What We Built

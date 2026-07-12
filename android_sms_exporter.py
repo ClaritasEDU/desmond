@@ -167,12 +167,26 @@ def parse_sms_backup(filepath):
     processed and freed as they complete, and everything parsed before a
     corrupt byte is still returned instead of throwing the run away."""
     print(f"\nParsing: {filepath}")
+    return _parse_stream(filepath)
 
+
+def parse_backup_bytes(data):
+    """Parse SMS Backup & Restore XML that arrived in memory — a browser
+    upload, a file read straight off the phone's mounted storage, an API
+    payload. Same streaming parser, no filesystem. Returns
+    (messages, call_logs)."""
+    import io
+    if isinstance(data, str):
+        data = data.encode("utf-8")
+    return _parse_stream(io.BytesIO(data), quiet=True)
+
+
+def _parse_stream(source, quiet=False):
     messages = []
     call_logs = []
 
     try:
-        for _event, elem in ET.iterparse(filepath, events=("end",)):
+        for _event, elem in ET.iterparse(source, events=("end",)):
             tag = elem.tag
             if tag == "sms":
                 msg = parse_sms_element(elem)
@@ -190,14 +204,17 @@ def parse_sms_backup(filepath):
                 continue
             elem.clear()   # free the element (and its MMS media) immediately
 
-        print(f"  Parsed {len(messages)} messages and {len(call_logs)} call logs")
+        if not quiet:
+            print(f"  Parsed {len(messages)} messages and {len(call_logs)} call logs")
 
     except ET.ParseError as e:
-        print(f"  Warning: the file is damaged after "
-              f"{len(messages)} messages / {len(call_logs)} calls — "
-              f"exporting what was readable. ({e})")
+        if not quiet:
+            print(f"  Warning: the file is damaged after "
+                  f"{len(messages)} messages / {len(call_logs)} calls — "
+                  f"exporting what was readable. ({e})")
     except Exception as e:
-        print(f"  Error: {e}")
+        if not quiet:
+            print(f"  Error: {e}")
         return messages, call_logs
 
     return messages, call_logs
@@ -448,10 +465,11 @@ def export_messages(messages, full_export=False):
     return conversations
 
 
-def export_ai_ready(messages):
-    """Export messages to AI-ready JSON and CSV formats."""
-
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+def build_export_data(messages):
+    """Turn parsed Android messages into a standard Desmond export dict —
+    the same shape messages.json carries — WITHOUT touching the filesystem.
+    This is what federation/web flows consume; export_ai_ready() wraps it
+    to write the files."""
 
     # Sort messages by timestamp
     messages = [m for m in messages if m.get('timestamp')]
@@ -504,6 +522,25 @@ def export_ai_ready(messages):
         conversations_meta[conv_name]["message_count"] += 1
         conversations_meta[conv_name]["last_message"] = timestamp.isoformat()
 
+    return {
+        "export_date": datetime.now().isoformat(),
+        "source": "Android SMS Backup & Restore",
+        "total_messages": len(all_messages),
+        "total_conversations": len(conversations_meta),
+        "conversations": list(conversations_meta.values()),
+        "messages": all_messages
+    }
+
+
+def export_ai_ready(messages):
+    """Export messages to AI-ready JSON and CSV formats."""
+
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+    export_data = build_export_data(messages)
+    all_messages = export_data["messages"]
+    conversations_meta = {c["name"]: c for c in export_data["conversations"]}
+
     # Calculate stats
     sms_count = sum(1 for m in all_messages if m.get('source') == 'sms')
     mms_count = sum(1 for m in all_messages if m.get('source') == 'mms')
@@ -521,15 +558,6 @@ def export_ai_ready(messages):
 
     # Write JSON
     json_path = os.path.join(OUTPUT_DIR, "messages.json")
-    export_data = {
-        "export_date": datetime.now().isoformat(),
-        "source": "Android SMS Backup & Restore",
-        "total_messages": len(all_messages),
-        "total_conversations": len(conversations_meta),
-        "conversations": list(conversations_meta.values()),
-        "messages": all_messages
-    }
-
     with open(json_path, 'w', encoding='utf-8') as f:
         json.dump(export_data, f, indent=2)
 

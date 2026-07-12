@@ -94,32 +94,40 @@ or on calendar feeds it fetched itself:
 JSON list of event dicts, or an already-parsed list — whatever transport the
 app used. Events and gaps are plain JSON-serializable dicts.
 
-iPhone today, Android tomorrow
-------------------------------
-iPhone (built now):
-  • Messages: iMessage/SMS via the existing exporters (Mac reads Messages
-    directly; Windows reads an iPhone backup). Appointment reminders from
-    dentists/schools almost always arrive as SMS, so this captures them.
-  • Calendar: no on-phone export needed — each parent pastes their private
-    iCal link once (Google / Outlook / iCloud published calendar). This is
-    phone-agnostic and stays fresh on every run.
+No files needed: the web wizard
+-------------------------------
+`python3 desmond_family_web.py` wraps this module in a local browser
+wizard: plug each phone into the computer (iPhone backup read in place,
+Android read live over USB via android_adb_exporter), connect calendars
+with Google/Microsoft sign-in (desmond_calendar_auth), and the gap report
+renders on the page — nothing exported, nothing downloaded, nothing
+written to disk unless you click Save. Mixed households (one parent on
+iPhone, one on Android) federate exactly the same, because every source
+lands in the standard export shape (see desmond_sources).
+
+Platform notes
+--------------
+iPhone:
+  • Messages: this Mac's own history reads directly; any other iPhone
+    plugs in and its local Finder/iTunes backup is read in place.
+    Appointment reminders from dentists/schools almost always arrive as
+    SMS, so this captures them.
   • iOS offers NO API to read other apps' push notifications, so texts +
     calendar are the two federable signals on iPhone. That's fine: they're
     where appointment/school traffic actually lives.
 
-Android (notes for future development):
-  • SMS/MMS already works: android_sms_exporter.py consumes "SMS Backup &
-    Restore" XML — feed those exports straight into this module today.
-    Caveat: RCS chats ("chat features") are NOT included in that XML;
-    google messages web export or a future exporter would be needed.
-  • Calendar needs nothing new — Google Calendar's secret iCal link is the
-    same regardless of phone.
-  • Android's real superpower (later): NotificationListenerService can
-    legally capture OTHER apps' notifications (school apps, pharmacy apps,
-    team apps) with the user's explicit permission — a signal iPhone can't
-    give us. A future android_notification_exporter.py should emit the same
-    export shape ({"messages": [...]}, conversation = app name) so this
-    module federates it with zero changes.
+Android (built: android_adb_exporter.py):
+  • SMS/MMS read live off the plugged-in phone over USB (USB debugging),
+    contact names resolved from the phone's own address book; SMS Backup &
+    Restore XML still works as the no-cable path.
+  • Caveat: RCS chats ("chat features") can't be read without root by ANY
+    method — automated reminders are SMS and ARE captured.
+  • Android's remaining superpower (future): NotificationListenerService
+    can capture OTHER apps' notifications (school apps, pharmacy apps)
+    with the user's permission — a signal iPhone can't give us. A future
+    android_notification_exporter.py should emit the standard export shape
+    ({"messages": [...]}, conversation = app name) so this module
+    federates it with zero changes.
   • Call logs are already exported on Android (calls.xml) — a future
     "missed the school's call" gap could reuse detect_message_gaps.
 """
