@@ -1,11 +1,272 @@
 # DESMOND - Session History
 
 **Repository:** `desmond`  
-**Total Sessions Logged:** 5  
-**Date Range:** 2025-01-25 to 2026-06-13  
-**Last Updated:** 2026-06-13 at 02:58 UTC
+**Total Sessions Logged:** 8  
+**Date Range:** 2025-01-25 to 2026-07-12  
+**Last Updated:** 2026-07-12
 
 This file contains a complete history of Claude Code sessions for this repository, automatically generated from transcript files. Sessions are listed in reverse chronological order (most recent first).
+
+---
+
+## 2026-07-12 (part 5) — Comprehensive audit: 19 bugs found and fixed
+
+### What We Built
+Full adversarial test pass over everything from parts 3–4 (three parallel
+review agents + direct repro work; every finding reproduced before fixing,
+every fix locked in with a regression test). 19 confirmed bugs fixed,
+low → high severity. All 12 suites pass.
+
+**High severity**
+1. `--shared`-mapped couple threads (contact names that don't auto-match)
+   were excluded from federation but NOT from gap detection — the couple's
+   private messages surfaced as "gaps". Mapping now flows through.
+2. The new `address` field crashed `export_ai_ready()`'s CSV writer on any
+   non-empty Android export (regression from part 4's own fix; caught
+   because nothing had tested that path — now the audit did).
+
+**Correctness of the gap report (the product)**
+3. iPhone↔Android couples: same SMS logged seconds apart never deduped →
+   duplicated couple transcript. Dedup now windowed (120s, same sender,
+   nearest match); "ok" from each partner in the same minute stays two
+   messages.
+4. Two different people saved under one name ("Mom" on each phone) were
+   diffed as the same thread → fabricated gaps. The differ now compares
+   thread addresses (last-7-digit phone / email) and drops conflicting
+   matches; the same school shortcode still diffs.
+5. `_norm_address` initially made 555-0142 ≠ +1-512-555-0142 (suppressing
+   real gaps) — now compares on the last 7 digits.
+6. "Unknown"/unnamed threads excluded from gap detection entirely.
+7. With 3+ participants, a thread two parents share never flagged the
+   third as missing it. Now it does.
+8. `--since` (on by default in the CLI) silently dropped gaps whose
+   messages had no parseable dates. Undated gaps now stay in scope.
+9. Hidden Google calendars (the API omits `selected=false`) were fetched —
+   Holidays-style subscriptions flooding the report. Now only
+   selected/primary calendars.
+10. Google `calendarList` pagination wasn't followed (accounts with 100+
+    calendars silently lost the rest).
+
+**Crashes on real-world data**
+11–13. `None` timestamps or times anywhere in an export crashed
+    federation sorts, gap sorting, and report rendering (three distinct
+    sites). All coerced safely.
+14. Outlook-style UTF-8 BOM made ICS uploads unparseable; BOM'd JSON and
+    UTF-16 XML uploads were rejected by the sniffing. All handled.
+15. Malformed JSON uploads leaked ValueError → web 500 instead of a
+    friendly 400.
+16. adb parser: a message body containing a line that *looks* like a new
+    row ("Row: 7 of the spreadsheet…") truncated the real row.
+17. chat.db messages joined to two chats (merged SMS/iMessage threads)
+    exported twice; attachment-only rows were mistyped
+    `text_with_attachment`.
+
+**Wizard robustness/UX/security**
+18. The 4-second state poll rebuilt the source/calendar cards, wiping a
+    half-typed calendar link and collapsing panels; a provider error during
+    the Google redirect dropped the connection and printed a raw traceback
+    (token in terminal); `window.open` after an `await` gets popup-blocked
+    in Firefox/Safari. All three fixed (state-diffed redraw that also
+    yields to focused inputs; guarded redirect with friendly error page;
+    synchronous tab open).
+19. DNS-rebinding gap: GET endpoints had no Host validation (Origin only
+    covers POSTs); `detect_available` (adb subprocess + backup-dir scans)
+    ran on every poll — now Host-checked everywhere and cached 8s with an
+    explicit /api/rescan. Duplicate participant names deduped.
+
+### Current Status
+- ✅ 12/12 suites green (~50 new regression checks added across 6 suites);
+  wizard JS re-verified with node; wizard re-driven end-to-end over HTTP.
+- 🚧 Real-device pass still pending (unchanged).
+
+### Branch Info
+- Branch: `claude/desmond-parentpoint-federation-qsqif6`.
+
+### Decisions Made
+- False positives are worse than false negatives in the gap report: name
+  matches with conflicting numbers are dropped, not guessed at.
+- Phone identity = last 7 digits (survives formatting differences without
+  needing country-code normalization).
+
+### Next Steps
+Unchanged from part 4 (real devices, OAuth registrations, then ParentPoint
+wiring once its branch is resolved).
+
+---
+
+## 2026-07-12 (part 4) — No files: the family web wizard, Android over USB, calendar sign-in
+
+### What We Built
+Requirement shift mid-session: no downloads, no export files, no pasted
+calendar links — plug the phone into the computer, sign in for calendars,
+see the gaps in the browser. Also: full Android support, including a MIXED
+household (one parent iPhone + one Android). All in desmond; parentpoint
+untouched (another branch is being resolved there first).
+
+1. **`desmond_family_web.py` (NEW)** — `python3 desmond_family_web.py`
+   opens a private local page (127.0.0.1 only). Four steps: names+consent
+   (trail embedded in the result) → messages (per parent: read this Mac's
+   Messages / read a plugged-in iPhone's local backup in place / read a
+   plugged-in Android live over USB / drop a messages.json or SMS Backup &
+   Restore XML on the page) → calendars (Connect Google / Connect
+   Microsoft sign-in buttons; saved accounts reconnect one-click; advanced
+   link fallback for iCloud) → gap report rendered on the page.
+   **Everything in memory; nothing on disk unless "Save archive" is
+   clicked.** Same-origin checks like the picker; PII-safe RunLogger.
+2. **`android_adb_exporter.py` (NEW)** — reads SMS/MMS-text straight off a
+   USB-connected Android phone via `adb shell content query` (read-only,
+   nothing installed on the phone). Contact names resolved from the
+   phone's own address book; drafts skipped; multi-line/comma bodies
+   parsed correctly; human fix-it errors for unauthorized/missing phones
+   and locked-down USB modes. RCS limitation documented (unreadable
+   without root by ANY method; SMS reminders are captured).
+3. **`desmond_sources.py` (NEW)** — every message source behind one
+   in-memory API returning the standard export shape: `read_mac_messages`
+   (chat.db direct), `read_iphone_backup` (Finder/iTunes backups, Mac AND
+   Windows locations, iOS-10+ sharded layout, encrypted-backup detection
+   with the untick-encryption hint), `read_android_usb`, `parse_upload`
+   (json/xml sniffing), `detect_available` (drives the wizard's buttons).
+   Tapbacks skipped so they can't fake message gaps.
+4. **`desmond_calendar_auth.py` (NEW)** — calendar reading via sign-in:
+   Google OAuth (loopback redirect + PKCE through the wizard's own server)
+   and Microsoft Graph (device-code flow — type a short code on any
+   device). Tokens cached chmod-600 keyed by account email for one-click
+   reuse; events normalized to the family event shape; iCal links demoted
+   to fallback. One-time app-registration steps (Google Cloud Console /
+   Azure) documented click-by-click in the module docstring; the wizard
+   shows them until client IDs exist in ~/.desmond/oauth_clients.json.
+5. **`android_sms_exporter.py`** — refactored: `parse_backup_bytes()`
+   (streaming parse of uploaded XML, no filesystem) +
+   `build_export_data()` (pure export builder); `export_ai_ready()` now
+   wraps it, file outputs unchanged.
+
+### Technical Details
+- Mixed household proven in tests: one parent's iPhone-shaped export + the
+  other's Android XML federate and diff correctly, couple thread deduped
+  across platforms.
+- adb row parsing survives commas AND newlines inside message bodies by
+  projecting the free-text column last.
+- OAuth HTTP goes through one injectable funnel (`_http`, late-bound) —
+  tests and future ParentPoint code stub the network in one place. Found
+  and fixed a default-arg early-binding bug there; also fixed source
+  endpoints reading data before the consent check.
+- New suites: adb (17 checks), sources (17), calendar auth (23), web
+  wizard end-to-end over real HTTP (25 — incl. consent gating, cross-site
+  POST rejection, nothing-on-disk-until-Save). **All 12 suites pass.**
+
+### Current Status
+- ✅ All 12 test suites green; wizard boot-checked; wizard driven
+  end-to-end over HTTP in-container (stubbed providers/phones).
+- 🚧 Real-device runs pending: a real iPhone backup, a real Android over
+  adb, and real Google/Microsoft sign-ins need Chris's machine + the
+  one-time app registrations.
+
+### Branch Info
+- Branch: `claude/desmond-parentpoint-federation-qsqif6` (parts 3+4).
+
+### Decisions Made
+- "Web interface with phone connected to computer" = local wizard server,
+  because no hosted website can read a USB-connected phone; the wizard is
+  also the reference client for the pure pipeline ParentPoint will reuse.
+- Android live-read via adb/USB debugging chosen over requiring the SMS
+  Backup & Restore app; the XML drop stays as the no-cable path.
+- Google = loopback OAuth (Calendar scope disallows device flow);
+  Microsoft = device code (no redirect plumbing). Both need a one-time
+  free app registration by us, never by parents.
+- iCloud calendar: no third-party OAuth API exists → published-link
+  fallback under "Advanced".
+
+### Next Steps
+1. Do the two app registrations (steps in desmond_calendar_auth.py),
+   drop IDs into ~/.desmond/oauth_clients.json, run the wizard for real.
+2. Real-device pass: iPhone backup read + Android adb read on Chris's
+   machine.
+3. When the parentpoint branch is resolved: wire ParentPoint to
+   desmond_sources + desmond_calendar_auth + federate_family_data.
+
+### Questions/Blockers
+- Parentpoint intentionally untouched this session (branch conflict there).
+- OAuth Connect buttons stay hidden until the one-time registrations exist.
+
+---
+
+## 2026-07-12 (part 3) — Family federation: the ParentPoint coverage-gap engine
+
+### What We Built
+1. **`desmond_family.py` (NEW)** — federates two parents' **messages AND
+   calendars**, then diffs the two views to surface the coverage gaps
+   ParentPoint exists to fix: the dentist text only Mom got, the school
+   event only on Dad's calendar. Three gap types come out of the diff:
+   - 📅 **calendar** — events on only one parent's calendar (`missing_for`)
+   - 💬 **messages** — incoming texts only one parent received, in threads
+     both parents have
+   - 📥 **threads** — counterparts (dentist, coach, school office) that only
+     ever text one parent
+   One dummy-proof command:
+   `python3 desmond_family.py "Chris=EXPORT" "Kate=EXPORT" --calendar
+   "Chris=SECRET_ICAL_URL" --calendar "Kate=…"` → writes
+   `~/Downloads/Desmond_Family_Archive/` with **FAMILY_GAPS.md** (the
+   deliverable), `family.json` (format `desmond-family/1`),
+   `FAMILY_SUMMARY.md`, and the couple's merged thread under `shared/`.
+2. **Pure in-memory API for ParentPoint** (surfacing comes in a later
+   session, in parentpoint): `federate_family_data(message_exports=…,
+   calendar_exports=…, consented=True, consent_records=[…], since=…,
+   keywords=…)` — no filesystem, no printing; returns the JSON-serializable
+   payload plus `gaps_md`/`summary_md` as strings. `parse_calendar()`
+   accepts raw ICS text/bytes (what fetching a feed returns), JSON, or
+   event lists — whatever transport the app used.
+3. **Noise controls so the report is worry-free:** identical incoming texts
+   within 5 min count as received on both phones (carrier lag); events with
+   the same title on the same day match even when the minute differs
+   (`loose_match: true`); default reporting window = last 30 days +
+   everything upcoming (`--since` / `--all`); `--keyword dentist` narrows;
+   `--same-thread "Dan (Soccer)=+1512…"` maps differently-saved contacts.
+
+### Technical Details
+- Reuses, doesn't reinvent: message merging delegates to
+  `desmond_federate.federate_data()` (couple thread excluded from gaps);
+  ICS parsing/fetching/URL-normalizing imported from `desmond_consolidate`.
+  Stdlib only, consent enforced at the library level (same `ConsentError`).
+- Calendar identity = (start to the minute — to the day for all-day —
+  + normalized title), with a second same-day/same-title loose pass.
+- **iPhone-first, Android notes written down** (module docstring + README
+  table): Android SMS exports federate today via
+  `android_sms_exporter.py`, but RCS chats are NOT in SMS Backup & Restore
+  XML (future exporter needed); calendar links are phone-agnostic; Android's
+  `NotificationListenerService` could later capture school-app notifications
+  (iOS has no such API — that's why iPhone = texts + calendar), emitted in
+  the standard export shape so this module needs zero changes.
+- New `test_desmond_family.py` (32 checks — gap detection, loose
+  matching, lag tolerance, consent, filters, renders, disk wrapper); every
+  test suite in the repo passes; CLI exercised end-to-end in-container with
+  synthetic exports + .ics files.
+
+### Current Status
+- ✅ All test suites green; family CLI verified end-to-end in-container.
+- 🚧 Not yet run with real exports/feeds (needs Chris's machine + a second
+  participant's export).
+
+### Branch Info
+- Branch: `claude/desmond-parentpoint-federation-qsqif6` (this session).
+
+### Decisions Made
+- Gaps live in desmond as a generic "two people's data" diff — ParentPoint
+  later calls `federate_family_data()` and does the parent-facing surfacing.
+- Kid-related filtering is a plain `keywords` parameter for now; smarter
+  classification belongs in ParentPoint, not here.
+- iOS notification capture is impossible (no API), so iPhone v1 = SMS +
+  calendar feeds; Android notification capture noted as the future
+  differentiator.
+
+### Next Steps
+1. Real-world run: two actual exports + two real secret iCal links →
+   sanity-check FAMILY_GAPS.md noise level; tune window/matching if needed.
+2. ParentPoint side (separate session, parentpoint repo): feed
+   `federate_family_data()` output into the app's notification surface.
+3. Android follow-ups when wanted: RCS story + notification exporter.
+
+### Questions/Blockers
+- None for the library; real-data noise tuning needs Chris's machine.
 
 ---
 

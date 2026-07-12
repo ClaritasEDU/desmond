@@ -4,9 +4,12 @@
 
 A cross-platform toolkit that exports your text message history to AI-ready formats. Works with iMessage on Mac, iPhone backups on Windows, and Android SMS backups.
 
-Text messages are the headline act. Two optional extras build on it:
+Text messages are the headline act. Three optional extras build on it:
 **[Federation](#federation-two-people-one-shared-archive)** merges two people's
-exports (say, a husband and wife) into one shared archive, and
+exports (say, a husband and wife) into one shared archive,
+**[Family federation](#family-federation-find-the-coverage-gaps-messages--calendars)**
+diffs two parents' messages **and calendars** to surface what only one of them
+knows (the missed dentist text, the invite on one calendar), and
 **[Consolidate mode](#optional-consolidate-mode-one-md-of-your-personal-data)**
 builds a single Markdown file from your messages, calendar (Google / Outlook /
 Apple), contacts, and call logs.
@@ -515,6 +518,112 @@ result["shared_transcripts"]   # {thread title: transcript markdown}
 An online app should set `consented=True` only after **each** participant has
 affirmatively opted in. For local use, `federate()` wraps this and writes the
 files (that's what the CLI does).
+
+---
+
+## Family federation: find the coverage gaps (messages + calendars)
+
+Family coordination breaks in one specific way: the dentist texts one parent
+about the kid's appointment and the other parent never hears about it; the
+school event lands on one calendar but not the other. Family federation
+combines **both parents' messages AND calendars** and then does what no
+single-person export can — it **diffs the two views** and reports the blind
+spots:
+
+- 📅 **calendar events only on one parent's calendar**
+- 💬 **texts only one parent received** (in threads you both have)
+- 📥 **whole threads that only ever talk to one of you** (the dentist, the
+  coach, the school office)
+
+### ⭐ The easy way: the web wizard (no files, no exports)
+
+```bash
+cd ~/desmond
+python3 desmond_family_web.py
+```
+
+Your browser opens a private page served only on this computer. Four steps:
+
+1. **Names + consent** — both parents agree on screen; the consent trail is
+   embedded in the result.
+2. **Messages — plug the phone in, that's it:**
+   - *Messages on this Mac* — read directly, nothing to plug in
+   - *iPhone* — plug it in, make/refresh a local backup when the page asks
+     (Finder / iTunes / Apple Devices, encryption unticked); the wizard
+     finds and reads it in place
+   - *Android* — plug it in with USB debugging on (the page shows the
+     60-second setup); messages are read live over the cable
+   - or drop a file on the page (a Desmond `messages.json`, or an SMS
+     Backup & Restore `.xml` straight off the phone's storage)
+   **One parent on iPhone and one on Android works** — every source lands
+   in the same shape before the diff.
+3. **Calendars — sign in, don't paste links:** each parent clicks
+   **Connect Google** or **Connect Microsoft/Outlook** and signs in. A
+   paste-a-link fallback hides under "Advanced" for iCloud published
+   calendars.
+4. **The gap report renders on the page.** Nothing is written to disk
+   unless you click **Save archive**; quitting the terminal forgets
+   everything.
+
+**One-time developer setup for calendar sign-in** (you, once — not each
+parent): register the app with Google and Microsoft and drop the client IDs
+into `~/.desmond/oauth_clients.json`. The exact click-by-click steps are at
+the top of `desmond_calendar_auth.py`; until it's done, the wizard shows
+those steps and the link fallback still works.
+
+### The scripted way (CLI, uses export files)
+
+```bash
+cd ~/desmond
+python3 desmond_family.py \
+    "Chris=~/Downloads/iMessages_Export" \
+    "Kate=/path/to/kates_export" \
+    --calendar "Chris=https://calendar.google.com/calendar/ical/…/basic.ics" \
+    --calendar "Kate=webcal://…"
+```
+
+Writes `Desmond_Family_Archive/` with **`FAMILY_GAPS.md`**, `family.json`
+(format `desmond-family/1`), `FAMILY_SUMMARY.md`, and the couple's merged
+thread under `shared/`. `--since` / `--all` / `--keyword` /
+`--same-thread "Dan (Soccer)=+1512555…"` control the report.
+
+### How it stays low-noise
+
+Identical texts within 5 minutes count as "both got it" (carriers lag);
+same-day/same-title events match even when the two calendars disagree on
+the minute; the default window is the last 30 days + everything upcoming.
+Consent is enforced at the library level — nothing merges until every
+participant has agreed.
+
+### For apps (this is the ParentPoint hook)
+
+The whole pipeline is pure, in-memory functions — no filesystem, no
+printing; the web wizard is just a thin local UI over them:
+
+```python
+from desmond_sources import parse_upload            # or read_* readers
+from desmond_calendar_auth import fetch_calendar_events
+from desmond_family import parse_calendar, federate_family_data
+
+result = federate_family_data(
+    message_exports=[("Chris", parse_upload(chris_bytes, "messages.json")),
+                     ("Kate",  parse_upload(kate_xml, "sms.xml"))],
+    calendar_exports=[("Chris", parse_calendar(google_events, "google")),
+                      ("Kate",  parse_calendar(outlook_events, "microsoft"))],
+    consented=True, consent_records=[…], since="2026-06-01")
+
+result["family"]["gaps"]   # structured gap lists: calendar/messages/threads
+result["gaps_md"]          # FAMILY_GAPS.md as a string, ready to render
+```
+
+### Platform truth table
+
+| Signal | iPhone | Android |
+|--------|--------|---------|
+| Texts | This Mac's Messages read directly; any other iPhone plugs in and its local backup is read in place | **Read live over USB** (`android_adb_exporter.py`, USB debugging) or SMS Backup & Restore XML dropped on the page. **RCS chats can't be read by any tool without root** — automated reminders are SMS and ARE captured |
+| Calendar | Google/Microsoft **sign-in** (`desmond_calendar_auth.py`); iCloud published-link fallback | Identical — calendars are account-based, not phone-based |
+| App notifications | **Not possible** — iOS has no API to read other apps' notifications; texts + calendar are the federable signals | `NotificationListenerService` can capture school/pharmacy/team app notifications with user permission — a future `android_notification_exporter.py` emitting the standard export shape would federate with zero changes here |
+| Calls | — | `calls.xml` already exported; a "missed the school's call" gap could reuse the same differ |
 
 ---
 

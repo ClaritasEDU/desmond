@@ -79,8 +79,15 @@ import json
 import os
 import sys
 from collections import defaultdict
+from datetime import datetime
 
 DEFAULT_OUTPUT_DIR = os.path.expanduser("~/Downloads/Desmond_Federated_Archive")
+
+# Two phones rarely log the same SMS at the same second — carriers deliver
+# with a lag (iMessage stamps match; SMS between an iPhone and an Android
+# can differ by tens of seconds). Identical text from the same sender within
+# this window is treated as the same message.
+DEDUP_WINDOW_SECONDS = 120
 
 
 class ConsentError(Exception):
@@ -186,11 +193,12 @@ def _find_conv_for(export, other_name):
     return best
 
 
-def _dedup_key(msg):
-    """A message's identity for cross-export dedup: same second + same text.
-    (Both sides of an iMessage thread carry the same timestamp; texts are
-    compared exactly.)"""
-    return (msg.get("timestamp", "")[:19], (msg.get("text") or "").strip())
+def _msg_epoch(ts):
+    """ISO timestamp -> epoch seconds, or None when unparseable."""
+    try:
+        return datetime.fromisoformat(ts[:19]).timestamp()
+    except (ValueError, TypeError):
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -245,7 +253,7 @@ def federate_data(exports, consented=False, explicit_shared=None,
         t["title"] = f"{name_a} and {name_b}"
 
     merged = []
-    seen_shared = {}   # thread title -> {dedup_key: merged message record}
+    seen_shared = {}   # thread title -> {text: [candidate records]}
     deduplicated = 0
 
     for owner, export in exports:
@@ -266,23 +274,44 @@ def federate_data(exports, consented=False, explicit_shared=None,
             if thread is not None:
                 rec["conversation"] = thread["title"]
                 rec["shared"] = True
-                key = _dedup_key(msg)
-                bucket = seen_shared.setdefault(thread["title"], {})
-                existing = bucket.get(key)
-                if existing is not None and existing["owner"] != owner:
-                    # Same message, already merged from the other phone.
+                text = (msg.get("text") or "").strip()
+                ts = _msg_epoch(msg.get("timestamp", ""))
+                cands = seen_shared.setdefault(thread["title"],
+                                               {}).setdefault(text, [])
+                # Same message from the other phone: same text AND same
+                # sender within DEDUP_WINDOW_SECONDS (nearest wins). The
+                # sender check keeps "ok" from Chris and "ok" from Kate in
+                # the same minute apart; the window absorbs carrier lag on
+                # SMS between an iPhone and an Android.
+                best = None
+                for cand in cands:
+                    seen = cand.get("seen_by") or [cand["owner"]]
+                    if owner in seen or cand.get("sender") != rec.get("sender"):
+                        continue
+                    cts = cand.get("_epoch")
+                    if ts is None or cts is None:
+                        delta = (0 if (msg.get("timestamp") or "")[:19]
+                                 == (cand.get("timestamp") or "")[:19] else None)
+                    else:
+                        delta = abs(cts - ts)
+                    if (delta is not None and delta <= DEDUP_WINDOW_SECONDS
+                            and (best is None or delta < best[0])):
+                        best = (delta, cand)
+                if best is not None:
+                    existing = best[1]
                     existing.setdefault("seen_by", [existing["owner"]])
-                    if owner not in existing["seen_by"]:
-                        existing["seen_by"].append(owner)
+                    existing["seen_by"].append(owner)
                     deduplicated += 1
                     continue
-                if existing is None:
-                    bucket[key] = rec
+                rec["_epoch"] = ts
+                cands.append(rec)
             else:
                 rec["shared"] = False
             merged.append(rec)
 
-    merged.sort(key=lambda m: m.get("timestamp", ""))
+    merged.sort(key=lambda m: m.get("timestamp") or "")
+    for m in merged:
+        m.pop("_epoch", None)
 
     # Rebuild conversation metadata from the merged stream.
     conv_meta = {}
@@ -294,11 +323,11 @@ def federate_data(exports, consented=False, explicit_shared=None,
             "shared": m.get("shared", False),
             "owners": [],
             "message_count": 0,
-            "first_message": m.get("timestamp"),
-            "last_message": m.get("timestamp"),
+            "first_message": m.get("timestamp") or "",
+            "last_message": m.get("timestamp") or "",
         })
         meta["message_count"] += 1
-        meta["last_message"] = m.get("timestamp")
+        meta["last_message"] = m.get("timestamp") or ""
         if m["owner"] not in meta["owners"]:
             meta["owners"].append(m["owner"])
 

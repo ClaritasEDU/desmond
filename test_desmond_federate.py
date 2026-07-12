@@ -188,6 +188,43 @@ def main():
         except fed.ConsentError:
             check(True, "federate_data without consent raises ConsentError")
 
+        # ---- mixed iPhone+Android couples: carrier-skewed timestamps ----
+        skew_c = {"conversations": [{"name": "Kate", "type": "direct"}],
+                  "messages": [msg("2026-07-01T09:00:00", "Kate", "Me", True,
+                                   "On my way"),
+                               msg("2026-07-01T09:05:00", "Kate", "Kate",
+                                   False, "Grab milk")]}
+        skew_k = {"conversations": [{"name": "Chris", "type": "direct"}],
+                  "messages": [msg("2026-07-01T09:00:40", "Chris", "Chris",
+                                   False, "On my way"),
+                               msg("2026-07-01T09:05:35", "Chris", "Me",
+                                   True, "Grab milk")]}
+        skew = fed.federate_data([("Chris", skew_c), ("Kate", skew_k)],
+                                 consented=True)
+        check(skew["federated"]["deduplicated"] == 2
+              and skew["federated"]["total_messages"] == 2,
+              "SMS logged seconds apart on the two phones still dedups "
+              f"(got {skew['federated']['deduplicated']})")
+
+        # ...but the same word from BOTH partners in one minute is NOT one
+        # message (sender check).
+        ok_c = {"conversations": [{"name": "Kate", "type": "direct"}],
+                "messages": [msg("2026-07-01T09:00:00", "Kate", "Me", True, "ok"),
+                             msg("2026-07-01T09:00:30", "Kate", "Kate",
+                                 False, "ok")]}
+        ok_k = {"conversations": [{"name": "Chris", "type": "direct"}],
+                "messages": [msg("2026-07-01T09:00:00", "Chris", "Chris",
+                                 False, "ok"),
+                             msg("2026-07-01T09:00:30", "Chris", "Me",
+                                 True, "ok")]}
+        both_ok = fed.federate_data([("Chris", ok_c), ("Kate", ok_k)],
+                                    consented=True)
+        check(both_ok["federated"]["deduplicated"] == 2
+              and both_ok["federated"]["total_messages"] == 2,
+              "'ok' from each partner dedups per sender, not into one "
+              f"(got {both_ok['federated']['deduplicated']}/"
+              f"{both_ok['federated']['total_messages']})")
+
     print()
     if failures:
         print(f"{len(failures)} test(s) FAILED")
