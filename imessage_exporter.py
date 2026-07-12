@@ -12,6 +12,7 @@ import re
 import glob
 import shutil
 import subprocess
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from collections import defaultdict
@@ -93,11 +94,15 @@ def load_contacts():
         return
     
     for db_file in db_files:
+        temp_db = None
         try:
-            # Copy database to temp location to avoid lock issues
-            temp_db = "/tmp/contacts_temp.db"
+            # Copy database to a private temp location to avoid lock issues
+            # (a per-run random name — a fixed /tmp path collides between
+            # users/runs on a shared Mac).
+            fd, temp_db = tempfile.mkstemp(suffix=".abcddb")
+            os.close(fd)
             subprocess.run(['cp', db_file, temp_db], check=True)
-            
+
             conn = sqlite3.connect(temp_db)
             cursor = conn.cursor()
             
@@ -149,12 +154,15 @@ def load_contacts():
                 print(f"  Email lookup error: {e}")
             
             conn.close()
-            
-            # Clean up temp file
-            os.remove(temp_db)
-            
+
         except Exception as e:
             print(f"  Error reading {db_file}: {e}")
+        finally:
+            if temp_db:
+                try:
+                    os.remove(temp_db)
+                except OSError:
+                    pass
     
     print(f"Loaded {len(CONTACTS_CACHE)} contact mappings.")
 
@@ -225,12 +233,47 @@ def get_chat_participants(chat_id, cursor):
     return None
 
 def convert_apple_time(apple_timestamp):
-    """Convert Apple's timestamp format to readable datetime."""
+    """Convert Apple's timestamp format to readable datetime.
+
+    Modern macOS stores message.date as NANOSECONDS since 2001-01-01; databases
+    migrated from pre-High Sierra used SECONDS. Detect by magnitude, and never
+    let one corrupt row abort an entire export."""
     if apple_timestamp is None:
         return None
-    # Apple uses nanoseconds since 2001-01-01
-    unix_timestamp = apple_timestamp / 1_000_000_000 + 978307200
-    return datetime.fromtimestamp(unix_timestamp)
+    try:
+        ts = float(apple_timestamp)
+        if abs(ts) > 1e12:          # nanoseconds (seconds would be ~1e9)
+            ts /= 1_000_000_000
+        return datetime.fromtimestamp(ts + 978307200)
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
+def decode_attributed_body(data):
+    """Recover message text Apple stashes in the binary `attributedBody` field
+    when `message.text` is NULL — common on current macOS. Without this, many
+    (often most) recent messages export as empty/unknown."""
+    if not data:
+        return None
+    try:
+        if isinstance(data, str):
+            return data or None
+        chunk = data.split(b"NSString")[1][5:]
+        if chunk[0] == 0x81:
+            length = int.from_bytes(chunk[1:3], "little")
+            chunk = chunk[3:]
+        else:
+            length = chunk[0]
+            chunk = chunk[1:]
+        return chunk[:length].decode("utf-8", errors="ignore").strip() or None
+    except Exception:
+        return None
+
+
+def open_messages_db(db_path=None):
+    """Open chat.db strictly READ-ONLY. A plain connect() would create an empty
+    file at a wrong path and could write to the real database — this cannot."""
+    return sqlite3.connect(f"file:{db_path or MESSAGES_DB}?mode=ro", uri=True)
 
 def load_state():
     """Load the last export state."""
@@ -257,20 +300,21 @@ def export_messages(full_export=False):
     # Load state
     state = load_state()
     last_rowid = 0 if full_export else state.get("last_message_rowid", 0)
-    
-    # Connect to database
-    conn = sqlite3.connect(MESSAGES_DB)
+
+    # Connect to database (read-only — never touches Messages itself)
+    conn = open_messages_db()
     cursor = conn.cursor()
-    
+
     # Get messages with attachment and reaction info
     query = """
-    SELECT 
+    SELECT
         message.ROWID,
         message.text,
         message.date,
         message.is_from_me,
         message.handle_id,
         message.associated_message_type,
+        message.attributedBody,
         chat.chat_identifier,
         chat.display_name
     FROM message
@@ -331,9 +375,14 @@ def export_messages(full_export=False):
     max_rowid = last_rowid
     
     for row in messages:
-        rowid, text, date, is_from_me, handle_id, assoc_msg_type, chat_id, display_name = row
-        
+        rowid, text, date, is_from_me, handle_id, assoc_msg_type, attributed, chat_id, display_name = row
+
         max_rowid = max(max_rowid, rowid)
+
+        # Modern macOS often leaves message.text NULL and stores the real text
+        # in the binary attributedBody field.
+        if not text:
+            text = decode_attributed_body(attributed)
         
         # Get conversation identifier
         if display_name:
@@ -392,21 +441,23 @@ def export_messages(full_export=False):
     
     # Write to files
     messages_written = 0
-    
+
     for conv_name, dates in conversations.items():
         conv_dir = os.path.join(OUTPUT_DIR, conv_name)
         os.makedirs(conv_dir, exist_ok=True)
-        
+
         for date_str, msgs in dates.items():
             filename = os.path.join(conv_dir, f"{date_str}.md")
-            
-            # Append to existing file or create new
-            mode = 'a' if os.path.exists(filename) else 'w'
-            
+
+            # A --full run REWRITES each day file (it holds the complete day,
+            # so appending would duplicate the whole history). Incremental
+            # runs append only the genuinely new rows.
+            mode = 'a' if (not full_export and os.path.exists(filename)) else 'w'
+
             with open(filename, mode) as f:
                 if mode == 'w':
                     f.write(f"# Messages with {conv_name} - {date_str}\n\n")
-                
+
                 for msg in msgs:
                     f.write(f"**{msg['time']} - {msg['sender']}:** {msg['text']}\n\n")
                     messages_written += 1
@@ -431,17 +482,19 @@ def export_ai_ready(full_export=False):
     # Create output directory
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     
-    # Load state
+    # Load state. NOTE: the AI-ready export keeps its OWN rowid cursor —
+    # sharing last_message_rowid with the markdown export meant whichever ran
+    # second always saw "no new messages" and messages.json was never written.
     state = load_state()
-    last_rowid = 0 if full_export else state.get("last_message_rowid", 0)
-    
-    # Connect to database
-    conn = sqlite3.connect(MESSAGES_DB)
+    last_rowid = 0 if full_export else state.get("last_ai_rowid", 0)
+
+    # Connect to database (read-only — never touches Messages itself)
+    conn = open_messages_db()
     cursor = conn.cursor()
-    
+
     # Get messages with more metadata including attachment, reaction, and special message info
     query = """
-    SELECT 
+    SELECT
         message.ROWID,
         message.text,
         message.date,
@@ -451,6 +504,7 @@ def export_ai_ready(full_export=False):
         message.associated_message_guid,
         message.balloon_bundle_id,
         message.expressive_send_style_id,
+        message.attributedBody,
         chat.chat_identifier,
         chat.display_name,
         chat.ROWID as chat_rowid
@@ -548,10 +602,18 @@ def export_ai_ready(full_export=False):
     all_messages = []
     conversations_meta = {}
     skipped_special = 0
-    
+    max_rowid = last_rowid
+
     for row in messages:
-        rowid, text, date, is_from_me, handle_id, assoc_msg_type, assoc_msg_guid, balloon_bundle_id, expressive_style, chat_id, display_name, chat_rowid = row
-        
+        rowid, text, date, is_from_me, handle_id, assoc_msg_type, assoc_msg_guid, balloon_bundle_id, expressive_style, attributed, chat_id, display_name, chat_rowid = row
+
+        max_rowid = max(max_rowid, rowid)
+
+        # Modern macOS often leaves message.text NULL and stores the real text
+        # in the binary attributedBody field.
+        if not text:
+            text = decode_attributed_body(attributed)
+
         # Get timestamp
         msg_datetime = convert_apple_time(date)
         if msg_datetime is None:
@@ -679,7 +741,34 @@ def export_ai_ready(full_export=False):
         conversations_meta[conv_name]["last_message"] = msg_datetime.isoformat()
     
     conn.close()
-    
+
+    # Incremental runs MERGE with the existing messages.json — writing only
+    # the new delta would silently destroy all prior history in the file.
+    if not full_export:
+        existing_json = os.path.join(OUTPUT_DIR, "messages.json")
+        if os.path.exists(existing_json):
+            try:
+                with open(existing_json, encoding='utf-8') as f:
+                    prior = json.load(f).get("messages", [])
+            except Exception:
+                prior = []
+                print("  Note: existing messages.json was unreadable — "
+                      "run --full once to rebuild the complete file.")
+            if prior:
+                all_messages = prior + all_messages
+                conversations_meta = {}
+                for m in all_messages:
+                    name = m.get("conversation") or "Unknown"
+                    meta = conversations_meta.setdefault(name, {
+                        "name": name,
+                        "type": m.get("conversation_type", "direct"),
+                        "message_count": 0,
+                        "first_message": m.get("timestamp"),
+                        "last_message": m.get("timestamp"),
+                    })
+                    meta["message_count"] += 1
+                    meta["last_message"] = m.get("timestamp")
+
     # Calculate message type counts for terminal output
     text_count = sum(1 for m in all_messages if m["message_type"] == "text")
     attachment_count = sum(1 for m in all_messages if m["message_type"] == "attachment")
@@ -799,6 +888,10 @@ def export_ai_ready(full_export=False):
     
     print(f"Created {summary_path}")
 
+    # Save this export's own cursor (separate from the markdown export's).
+    state["last_ai_rowid"] = max_rowid
+    save_state(state)
+
 def create_index(output_dir):
     """Create an index file listing all conversations and recent activity."""
     index_path = os.path.join(output_dir, "INDEX.md")
@@ -819,14 +912,21 @@ def create_index(output_dir):
 
 def main():
     import sys
-    
+
     full_export = "--full" in sys.argv
-    
+
+    if not os.path.exists(MESSAGES_DB):
+        print(f"Could not find your Messages database at {MESSAGES_DB}")
+        print("This tool runs on a Mac with the Messages app set up.")
+        print("If Terminal lacks access: System Settings → Privacy & Security → "
+              "Full Disk Access → enable Terminal, then restart it.")
+        sys.exit(1)
+
     if full_export:
         print("Running full export of all messages...")
     else:
         print("Exporting new messages since last run...")
-    
+
     try:
         # Export markdown files (for human browsing)
         export_messages(full_export=full_export)
@@ -850,6 +950,7 @@ def main():
         traceback.print_exc()
         print("\nMake sure Terminal has Full Disk Access:")
         print("System Settings > Privacy & Security > Full Disk Access > Enable Terminal")
+        sys.exit(1)   # let scheduled runs be observed failing
 
 if __name__ == "__main__":
     main()

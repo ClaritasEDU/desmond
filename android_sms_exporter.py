@@ -100,15 +100,17 @@ def find_backup_files(search_paths=None):
                     filepath = os.path.join(root, filename)
 
                     # Check if it looks like an SMS backup
-                    if is_sms_backup(filepath):
+                    kind = classify_backup(filepath)
+                    if kind:
                         stat = os.stat(filepath)
                         backup_files.append({
                             "path": filepath,
                             "filename": filename,
+                            "kind": kind,
                             "size": stat.st_size,
                             "modified": datetime.fromtimestamp(stat.st_mtime)
                         })
-                        print(f"    Found: {filename}")
+                        print(f"    Found: {filename} ({kind})")
 
     # Sort by modification time, most recent first
     backup_files.sort(key=lambda x: x["modified"], reverse=True)
@@ -116,65 +118,87 @@ def find_backup_files(search_paths=None):
     return backup_files
 
 
-def is_sms_backup(filepath):
-    """Check if a file is an SMS Backup & Restore XML file."""
+def classify_backup(filepath):
+    """Identify an SMS Backup & Restore XML file.
+
+    The app writes MESSAGES and CALL LOGS to SEPARATE files (sms-*.xml and
+    calls-*.xml) — returns "messages", "calls", or None so the caller can use
+    both instead of blindly grabbing whichever was modified last."""
     try:
         # Read just the beginning of the file to check
         with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
             header = f.read(1000)
 
-        # Look for SMS Backup & Restore signatures
         if '<smses' in header or '<sms protocol=' in header:
-            return True
+            return "messages"
         if '<mms ' in header and 'msg_box=' in header:
-            return True
+            return "messages"
         if '<calls' in header and '<call number=' in header:
-            return True
+            return "calls"
 
     except Exception:
         pass
 
-    return False
+    return None
+
+
+def is_sms_backup(filepath):
+    """Back-compat wrapper: True for any SMS Backup & Restore file."""
+    return classify_backup(filepath) is not None
+
+
+def clean_contact_name(contact_name):
+    """SMS Backup & Restore emits literal placeholder strings for missing
+    names — treat them as no name so distinct unknown numbers don't all merge
+    into one '(Unknown)' conversation."""
+    if not contact_name:
+        return None
+    if contact_name.strip().lower() in ("(unknown)", "unknown", "null"):
+        return None
+    return contact_name
 
 
 def parse_sms_backup(filepath):
-    """Parse an SMS Backup & Restore XML file."""
+    """Parse an SMS Backup & Restore XML file.
+
+    Streams with iterparse instead of loading the whole file as a DOM —
+    backups with inline MMS media are routinely hundreds of MB to multiple
+    GB, which a full parse would turn into 5-10× that much RAM. Elements are
+    processed and freed as they complete, and everything parsed before a
+    corrupt byte is still returned instead of throwing the run away."""
     print(f"\nParsing: {filepath}")
 
     messages = []
     call_logs = []
 
     try:
-        # Parse the XML file
-        tree = ET.parse(filepath)
-        root = tree.getroot()
-
-        # Process SMS messages
-        for sms in root.findall('.//sms'):
-            msg = parse_sms_element(sms)
-            if msg:
-                messages.append(msg)
-
-        # Process MMS messages
-        for mms in root.findall('.//mms'):
-            msg = parse_mms_element(mms)
-            if msg:
-                messages.append(msg)
-
-        # Process call logs (optional)
-        for call in root.findall('.//call'):
-            log = parse_call_element(call)
-            if log:
-                call_logs.append(log)
+        for _event, elem in ET.iterparse(filepath, events=("end",)):
+            tag = elem.tag
+            if tag == "sms":
+                msg = parse_sms_element(elem)
+                if msg:
+                    messages.append(msg)
+            elif tag == "mms":
+                msg = parse_mms_element(elem)
+                if msg:
+                    messages.append(msg)
+            elif tag == "call":
+                log = parse_call_element(elem)
+                if log:
+                    call_logs.append(log)
+            else:
+                continue
+            elem.clear()   # free the element (and its MMS media) immediately
 
         print(f"  Parsed {len(messages)} messages and {len(call_logs)} call logs")
 
     except ET.ParseError as e:
-        print(f"  Error parsing XML: {e}")
-        return [], []
+        print(f"  Warning: the file is damaged after "
+              f"{len(messages)} messages / {len(call_logs)} calls — "
+              f"exporting what was readable. ({e})")
     except Exception as e:
         print(f"  Error: {e}")
-        return [], []
+        return messages, call_logs
 
     return messages, call_logs
 
@@ -187,7 +211,7 @@ def parse_sms_element(sms):
         body = sms.get('body', '')
         date_ms = sms.get('date')
         msg_type = int(sms.get('type', 1))
-        contact_name = sms.get('contact_name')
+        contact_name = clean_contact_name(sms.get('contact_name'))
         readable_date = sms.get('readable_date')
 
         # Convert timestamp
@@ -197,8 +221,9 @@ def parse_sms_element(sms):
         else:
             timestamp = None
 
-        # Determine sender
-        if msg_type == 2:  # Sent
+        # Determine sender. Everything except type 1 (received) is outgoing:
+        # sent, draft, outbox, failed, queued are all authored by me.
+        if msg_type != 1:
             is_from_me = True
             sender = "Me"
         else:
@@ -233,7 +258,7 @@ def parse_mms_element(mms):
         # Get attributes
         date_ms = mms.get('date')
         msg_box = int(mms.get('msg_box', 1))
-        contact_name = mms.get('contact_name')
+        contact_name = clean_contact_name(mms.get('contact_name'))
         address = mms.get('address', 'Unknown')
 
         # Convert timestamp (MMS uses seconds, not milliseconds)
@@ -248,8 +273,8 @@ def parse_mms_element(mms):
         else:
             timestamp = None
 
-        # Determine sender
-        if msg_box == 2:  # Sent
+        # Determine sender. Boxes 2-4 (sent, draft, outbox) are all mine.
+        if msg_box != 1:
             is_from_me = True
             sender = "Me"
         else:
@@ -322,7 +347,7 @@ def parse_call_element(call):
         date_ms = call.get('date')
         duration = int(call.get('duration', 0))
         call_type = int(call.get('type', 1))
-        contact_name = call.get('contact_name')
+        contact_name = clean_contact_name(call.get('contact_name'))
 
         if date_ms:
             timestamp = datetime.fromtimestamp(int(date_ms) / 1000)
@@ -672,23 +697,39 @@ def main():
         print("  python android_sms_exporter.py --file \"path/to/backup.xml\"")
         sys.exit(1)
 
-    # Use the most recent backup
-    backup_file = backup_files[0]["path"]
-    print(f"\nUsing backup: {backup_file}")
+    # SMS Backup & Restore writes messages and call logs to SEPARATE files —
+    # use the most recent of EACH kind rather than whichever file is newest.
+    for b in backup_files:
+        b.setdefault("kind", classify_backup(b["path"]) or "messages")
+    message_files = [b for b in backup_files if b["kind"] == "messages"]
+    call_files = [b for b in backup_files if b["kind"] == "calls"]
 
-    # Parse the backup
-    messages, call_logs = parse_sms_backup(backup_file)
+    messages, call_logs = [], []
+    backup_file = None
+    if message_files:
+        backup_file = message_files[0]["path"]
+        print(f"\nUsing messages backup: {backup_file}")
+        messages, calls_inline = parse_sms_backup(backup_file)
+        call_logs.extend(calls_inline)
+    if call_files:
+        print(f"Using call-log backup: {call_files[0]['path']}")
+        _more_msgs, more_calls = parse_sms_backup(call_files[0]["path"])
+        call_logs.extend(more_calls)
 
-    if not messages:
+    if not messages and not call_logs:
         print("\nNo messages found in backup file.")
         sys.exit(1)
 
     # Export
-    print("\nExporting messages...")
-    export_messages(messages, full_export=full_export)
+    if messages:
+        print("\nExporting messages...")
+        export_messages(messages, full_export=full_export)
 
-    print("\nCreating AI-ready exports...")
-    export_ai_ready(messages)
+        print("\nCreating AI-ready exports...")
+        export_ai_ready(messages)
+    else:
+        print("\nNo messages backup found (only call logs) — back up "
+              "'Messages' in SMS Backup & Restore to export texts.")
 
     if call_logs:
         print(f"\nExporting {len(call_logs)} call logs...")
@@ -700,7 +741,8 @@ def main():
     # Save state
     state = load_state()
     state["last_export"] = datetime.now().isoformat()
-    state["last_file"] = backup_file
+    if backup_file:
+        state["last_file"] = backup_file
     save_state(state)
 
 

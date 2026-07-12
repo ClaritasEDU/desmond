@@ -4,6 +4,13 @@
 
 A cross-platform toolkit that exports your text message history to AI-ready formats. Works with iMessage on Mac, iPhone backups on Windows, and Android SMS backups.
 
+Text messages are the headline act. Two optional extras build on it:
+**[Federation](#federation-two-people-one-shared-archive)** merges two people's
+exports (say, a husband and wife) into one shared archive, and
+**[Consolidate mode](#optional-consolidate-mode-one-md-of-your-personal-data)**
+builds a single Markdown file from your messages, calendar (Google / Outlook /
+Apple), contacts, and call logs.
+
 Named after Desmond Hume from *Lost*, who pushed the button every 108 minutes to save the world.
 
 ---
@@ -93,7 +100,7 @@ attachment archiver, and the per-person picker), which `desmond_export.py` build
 ├── messages.json               # Full structured data for AI analysis
 ├── messages.csv                # Tabular format for spreadsheets
 ├── SUMMARY.md                  # Stats, top conversations, content breakdown
-├── INDEX.md                    # List of all conversations
+├── INDEX.md                    # List of all conversations (iMessage exporters)
 ├── John Smith/
 │   ├── 2024-01-15.md
 │   └── ...
@@ -454,6 +461,79 @@ The script will automatically search common folders (Downloads, Documents, Deskt
 
 ---
 
+## Federation: two people, one shared archive
+
+For couples (or any two people who share their lives) who each want their
+message history in one place — and other apps that need to combine two
+people's data with consent.
+
+**How it works:** each person runs Desmond on their *own* phone/computer,
+then the two finished exports are merged:
+
+```bash
+cd ~/desmond
+python3 desmond_federate.py "Chris=~/Downloads/iMessages_Export" \
+                            "Kate=/path/to/kates_export"
+```
+
+- **Consent first.** The tool asks you to confirm that *both* people agreed
+  before it merges anything (`--consented` for scripts that already asked).
+  It never reads anyone's Messages database — only export folders that were
+  handed to it.
+- **The shared thread is stitched together.** Your conversation with each
+  other appears in both exports — federation detects it (even with nicknames
+  like "Kate ❤️"; use `--shared "Wifey=Hubs"` if the names don't match at
+  all), deduplicates it, and rebuilds it as one transcript
+  (`shared/Chris_and_Kate.md`).
+- **Every message is tagged** with `owner` (whose phone it came from), and
+  "Me" is rewritten to real names so a combined archive stays unambiguous.
+
+**What you get:** `Desmond_Federated_Archive/` with `federated.json`,
+`federated.csv`, `FEDERATED_SUMMARY.md`, and the merged shared-thread
+transcript.
+
+**For other apps:** it's an importable, dependency-free module —
+
+```python
+from desmond_federate import load_export, federate
+result = federate([("Chris", load_export(path_a)),
+                   ("Kate",  load_export(path_b))],
+                  output_dir, consented=True)   # consent is required, explicitly
+```
+
+---
+
+## Optional: Consolidate mode (one .md of your personal data)
+
+**Not the default** — Desmond's day job is still text messages. When you want
+one AI-ready file of *you* to upload to Claude, consolidate mode builds a
+single `PERSONAL_ARCHIVE.md` from the sources you pick:
+
+```bash
+cd ~/desmond
+python3 desmond_consolidate.py                  # interactive: pick sources
+python3 desmond_consolidate.py --sources all
+python3 desmond_consolidate.py --sources calendar   # calendar only
+```
+
+| Source | Where it comes from |
+|--------|---------------------|
+| `messages` | Your existing Desmond export (auto-detected) |
+| `calendar` | `.ics` files — **Google Calendar** (Settings → Import & export → Export; point the tool at the downloaded `.zip` directly), **Microsoft Outlook** (Settings → Export calendar), or Apple Calendar (File → Export) |
+| `contacts` | `.vcf` vCard files (iCloud, Google Contacts, Android share) |
+| `calls` | Call-log XML from "SMS Backup & Restore" (Android) |
+
+Files in Downloads/Documents/Desktop are auto-detected; point at specific
+files with `--calendar`, `--contacts`, `--calls`, `--messages`. Messages
+appear as a per-conversation digest by default — add `--messages-full` to
+inline every message (can be huge). `--json` also writes a structured
+`personal_archive.json`.
+
+Everything is processed locally. The output consolidates your personal
+information in one file — store it somewhere you trust.
+
+---
+
 ## Using with Claude
 
 **For analysis and insights:**
@@ -540,10 +620,14 @@ The script will automatically search common folders (Downloads, Documents, Deskt
 
 ## Privacy & Security
 
-- All processing happens locally on your computer
-- No data is uploaded anywhere
-- No network connections are made
+- All processing happens locally on your computer — the tools themselves make
+  no network connections and upload nothing
+- If you keep the **Google Drive mirror** on, the Google Drive desktop app
+  then syncs that copy to your Google account (that's the point — an off-site
+  backup). Use `--no-drive` for a purely local export
 - Export files contain your complete message history — secure them appropriately
+- Federation merges exports only with **both people's consent**, and the
+  federated archive contains both histories — protect it accordingly
 
 ---
 
@@ -576,6 +660,12 @@ The script will automatically search common folders (Downloads, Documents, Deskt
 | `android_sms_exporter.py` | Exports messages from SMS Backup XML |
 | `android_export.sh` | macOS launcher |
 | `android_export_windows.bat` | Windows launcher |
+
+### Federation & Consolidate (both platforms)
+| File | Purpose |
+|------|---------|
+| `desmond_federate.py` | Merge two people's exports into one shared, consent-based archive (also an importable module for other apps) |
+| `desmond_consolidate.py` | **Optional mode:** one `PERSONAL_ARCHIVE.md` from messages + calendar (.ics) + contacts (.vcf) + call logs |
 
 ### Documentation
 | File | Purpose |

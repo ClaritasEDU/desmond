@@ -73,9 +73,10 @@ def find_backup_directory():
                         except Exception as e:
                             print(f"    Warning: Could not read backup info: {e}")
 
-                        # Check for messages database
-                        msg_db = os.path.join(backup_path, MESSAGES_DB_HASH)
-                        if os.path.exists(msg_db):
+                        # Check for messages database (flat = iOS ≤9,
+                        # sharded 3d/3d0d… = iOS 10+)
+                        msg_db = backup_file_path(backup_path, MESSAGES_DB_HASH)
+                        if msg_db:
                             backup_info["has_messages"] = True
                             backups_found.append(backup_info)
                             print(f"    Found: {backup_info['name']}")
@@ -100,9 +101,9 @@ def load_contacts(backup_dir):
 
     print("Loading contacts from backup...")
 
-    contacts_db = os.path.join(backup_dir, CONTACTS_DB_HASH)
+    contacts_db = backup_file_path(backup_dir, CONTACTS_DB_HASH)
 
-    if not os.path.exists(contacts_db):
+    if not contacts_db:
         print("  Note: Contacts database not found in backup. Using phone numbers/emails.")
         return
 
@@ -241,13 +242,34 @@ def get_chat_participants(chat_id, cursor):
     return None
 
 
+def backup_file_path(backup_dir, file_hash):
+    """Resolve a file inside an iPhone backup. iOS 9 and earlier stored files
+    flat; every backup since iOS 10 shards them into two-hex-char subfolders
+    (e.g. 3d/3d0d7e5f...). Returns whichever exists, else None."""
+    flat = os.path.join(backup_dir, file_hash)
+    if os.path.exists(flat):
+        return flat
+    sharded = os.path.join(backup_dir, file_hash[:2], file_hash)
+    if os.path.exists(sharded):
+        return sharded
+    return None
+
+
 def convert_apple_time(apple_timestamp):
-    """Convert Apple's timestamp format to readable datetime."""
+    """Convert Apple's timestamp format to readable datetime.
+
+    Modern iOS stores message.date as NANOSECONDS since 2001-01-01; older
+    backups used SECONDS. Detect by magnitude, and never let one corrupt row
+    abort an entire export."""
     if apple_timestamp is None:
         return None
-    # Apple uses nanoseconds since 2001-01-01
-    unix_timestamp = apple_timestamp / 1_000_000_000 + 978307200
-    return datetime.fromtimestamp(unix_timestamp)
+    try:
+        ts = float(apple_timestamp)
+        if abs(ts) > 1e12:          # nanoseconds (seconds would be ~1e9)
+            ts /= 1_000_000_000
+        return datetime.fromtimestamp(ts + 978307200)
+    except (ValueError, OverflowError, OSError):
+        return None
 
 
 def load_state():
@@ -425,8 +447,10 @@ def export_messages(messages_db_path, full_export=False):
         for date_str, msgs in dates.items():
             filename = os.path.join(conv_dir, f"{date_str}.md")
 
-            # Append to existing file or create new
-            mode = 'a' if os.path.exists(filename) else 'w'
+            # A --full run REWRITES each day file (it holds the complete day,
+            # so appending would duplicate the whole history). Incremental
+            # runs append only the genuinely new rows.
+            mode = 'a' if (not full_export and os.path.exists(filename)) else 'w'
 
             with open(filename, mode, encoding='utf-8') as f:
                 if mode == 'w':
@@ -456,9 +480,11 @@ def export_ai_ready(messages_db_path, full_export=False):
     # Create output directory
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    # Load state
+    # Load state. NOTE: the AI-ready export keeps its OWN rowid cursor —
+    # sharing last_message_rowid with the markdown export meant whichever ran
+    # second always saw "no new messages" and messages.json was never written.
     state = load_state()
-    last_rowid = 0 if full_export else state.get("last_message_rowid", 0)
+    last_rowid = 0 if full_export else state.get("last_ai_rowid", 0)
 
     # Copy database to temp location
     temp_db = os.path.join(os.environ.get("TEMP", "/tmp"), "messages_temp.db")
@@ -579,9 +605,12 @@ def export_ai_ready(messages_db_path, full_export=False):
     all_messages = []
     conversations_meta = {}
     skipped_special = 0
+    max_rowid = last_rowid
 
     for row in messages:
         rowid, text, date, is_from_me, handle_id, assoc_msg_type, assoc_msg_guid, balloon_bundle_id, expressive_style, chat_id, display_name, chat_rowid = row
+
+        max_rowid = max(max_rowid, rowid)
 
         # Get timestamp
         msg_datetime = convert_apple_time(date)
@@ -712,6 +741,33 @@ def export_ai_ready(messages_db_path, full_export=False):
     conn.close()
     os.remove(temp_db)
 
+    # Incremental runs MERGE with the existing messages.json — writing only
+    # the new delta would silently destroy all prior history in the file.
+    if not full_export:
+        existing_json = os.path.join(OUTPUT_DIR, "messages.json")
+        if os.path.exists(existing_json):
+            try:
+                with open(existing_json, encoding='utf-8') as f:
+                    prior = json.load(f).get("messages", [])
+            except Exception:
+                prior = []
+                print("  Note: existing messages.json was unreadable — "
+                      "run --full once to rebuild the complete file.")
+            if prior:
+                all_messages = prior + all_messages
+                conversations_meta = {}
+                for m in all_messages:
+                    name = m.get("conversation") or "Unknown"
+                    meta = conversations_meta.setdefault(name, {
+                        "name": name,
+                        "type": m.get("conversation_type", "direct"),
+                        "message_count": 0,
+                        "first_message": m.get("timestamp"),
+                        "last_message": m.get("timestamp"),
+                    })
+                    meta["message_count"] += 1
+                    meta["last_message"] = m.get("timestamp")
+
     # Calculate message type counts for terminal output
     text_count = sum(1 for m in all_messages if m["message_type"] == "text")
     attachment_count = sum(1 for m in all_messages if m["message_type"] == "attachment")
@@ -831,6 +887,10 @@ def export_ai_ready(messages_db_path, full_export=False):
 
     print(f"Created {summary_path}")
 
+    # Save this export's own cursor (separate from the markdown export's).
+    state["last_ai_rowid"] = max_rowid
+    save_state(state)
+
 
 def create_index(output_dir):
     """Create an index file listing all conversations and recent activity."""
@@ -892,9 +952,9 @@ def main():
 
     print(f"Using backup: {backup_dir}")
 
-    # Check for messages database
-    messages_db = os.path.join(backup_dir, MESSAGES_DB_HASH)
-    if not os.path.exists(messages_db):
+    # Check for messages database (handles both flat and iOS 10+ sharded layouts)
+    messages_db = backup_file_path(backup_dir, MESSAGES_DB_HASH)
+    if not messages_db:
         print(f"\nError: Messages database not found in backup.")
         print("This usually means the backup is encrypted.")
         print("\nTo fix this:")
@@ -927,6 +987,7 @@ def main():
         print(f"\nError: {e}")
         import traceback
         traceback.print_exc()
+        sys.exit(1)   # let Task Scheduler runs be observed failing
 
 
 if __name__ == "__main__":

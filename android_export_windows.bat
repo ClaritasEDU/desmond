@@ -22,7 +22,7 @@ if %ERRORLEVEL% neq 0 (
 )
 
 REM Get the directory of this batch file
-set SCRIPT_DIR=%~dp0
+set "SCRIPT_DIR=%~dp0"
 
 REM Run the exporter with all arguments passed through
 python "%SCRIPT_DIR%android_sms_exporter.py" %*

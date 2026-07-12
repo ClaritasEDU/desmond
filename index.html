@@ -562,7 +562,7 @@ cd desmond</code>
                         <code>python3 desmond_export.py</code>
                     </div>
                     <p>Open the <code>index.html</code> it creates, click a conversation, and read the whole thread with <strong>photos &amp; videos inline, in date order</strong>.</p>
-                    <p style="color:var(--text-muted);font-size:.95em">Options: <code>--photos-videos</code>, <code>--newest</code>, <code>--no-drive</code>, <code>--retry</code>. Saved to <code>~/Downloads/Desmond_Message_Archive/</code> (and mirrored to Google Drive).</p>
+                    <p style="color:var(--text-secondary);font-size:.95em">Options: <code>--photos-videos</code>, <code>--newest</code>, <code>--no-drive</code>, <code>--retry</code>. Saved to <code>~/Downloads/Desmond_Message_Archive/</code> (and mirrored to Google Drive).</p>
                 </div>
             </div>
 
@@ -925,6 +925,12 @@ cd desmond</code>
         function showElement(id) {
             const el = document.getElementById(id);
             el.classList.remove('hidden');
+            // hideAll() also hid any .card NESTED inside this container —
+            // unhide them too, or the intro card of every instructions page
+            // stays permanently invisible.
+            el.querySelectorAll('.card, .instructions').forEach(child => {
+                child.classList.remove('hidden');
+            });
             if (el.classList.contains('instructions')) {
                 el.classList.add('visible');
             }
