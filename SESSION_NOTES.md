@@ -9,6 +9,179 @@ This file contains a complete history of Claude Code sessions for this repositor
 
 ---
 
+## 2026-07-12 (part 2) — Federation goes online-ready; calendars fetch live
+
+### What We Built
+1. **Federation refactored for the future online app** (app itself comes in a
+   later session): the entire merge is now a PURE in-memory function —
+   `federate_data(exports, consented=True, consent_records=[...])` — that
+   takes uploaded exports (validated via `parse_export()`, which accepts
+   bytes/str/dict) and returns `{"federated": dict, "summary_md": str,
+   "shared_transcripts": {title: md}}` with zero filesystem access. The
+   payload carries `"format": "desmond-federated/1"` and the app's
+   per-participant consent trail verbatim. The CLI/`federate()` is now a thin
+   file-writing wrapper — behavior unchanged.
+2. **Online calendar integration** — no more .zip shuffling. Consolidate now
+   fetches Google Calendar and Microsoft Outlook/365 **private iCal feed
+   URLs** live (Google: "Secret address in iCal format"; Outlook: published
+   ICS link; `webcal://` normalized). `--calendar-url URL` (repeatable) +
+   `--remember` stores links privately (chmod 600,
+   `~/.desmond/calendar_feeds.json`); saved feeds are fetched automatically
+   on every later run incl. `--sources all` and the interactive picker, which
+   also offers first-time setup when calendar is picked with nothing
+   configured. `--forget-calendar-urls` clears them; `--no-saved-feeds`
+   skips for one run. Feed URLs are secrets → only the hostname is ever
+   printed. Exported .ics/.zip files remain the offline fallback.
+
+### Technical Details
+- Chose secret-iCal-URL feeds over OAuth APIs deliberately: no Google
+  Cloud/Azure app registration, no tokens to refresh, stdlib `urllib` only —
+  paste one link once. (An OAuth integration can layer on later if needed.)
+- Verified end-to-end against a real HTTP server in-container: fetch →
+  remember → auto-reuse → forget, plus failure paths (unreachable feed,
+  garbage URL) degrade gracefully without killing the run.
+- Tests: federate suite 27 checks (in-memory path, consent records, format
+  version, JSON-serializability, upload rejection); consolidate suite 41
+  checks (URL normalization, secret redaction, config perms 0600,
+  stubbed-network fetch, saved-feed auto-use, forget). All 9 suites pass.
+
+### Current Status
+- ✅ All 9 suites green; new-feature CLIs exercised end-to-end in-container.
+- 🚧 Real-Mac verification still pending (unchanged), plus a real Google/
+  Outlook feed URL should be tried once on Chris's machine.
+
+### Branch Info
+- Branch: `claude/app-review-federation-export-bmony0` (same as part 1).
+
+### Decisions Made
+- Online calendar = private iCal feeds (no OAuth, no dependencies); saved
+  config is chmod 600 and URLs are never printed in full.
+- Online federation app will consume `federate_data()`/`parse_export()`;
+  consent stays a hard requirement at the library level, with the app's
+  consent trail embedded in the archive.
+
+### Next Steps
+1. Real-Mac smoke test (exporters + picker fixes from part 1).
+2. Paste a real Google Calendar secret address into
+   `desmond_consolidate.py --sources calendar --calendar-url … --remember`.
+3. Next session: build the online federation app on top of federate_data().
+
+### Questions/Blockers
+- Need the future session for the online app itself; library side is ready.
+
+---
+
+## 2026-07-12 — Full code review + fixes, Federation, optional Consolidate mode
+
+### What We Built
+1. **Full code review of every module** (4 parallel review passes over the whole
+   repo), then fixed all confirmed critical/major findings — see below.
+2. **Federation** (`desmond_federate.py` + `test_desmond_federate.py`, 17 checks):
+   merges two people's Desmond exports (the husband-and-wife case) into one
+   shared archive. Consent is enforced (interactive confirmation or explicit
+   `--consented` / `consented=True`); the couple's own thread is auto-detected
+   (handles nicknames like "Kate ❤️", or explicit `--shared A=B`), deduplicated
+   across both phones, `owner`-tagged, "Me" rewritten to real names. Outputs
+   `federated.json/.csv`, `FEDERATED_SUMMARY.md`, and a merged
+   `shared/<A>_and_<B>.md` transcript. Importable by other apps
+   (`from desmond_federate import load_export, federate`) — stdlib only.
+3. **Optional Consolidate mode** (`desmond_consolidate.py` +
+   `test_desmond_consolidate.py`, 30 checks): builds ONE `PERSONAL_ARCHIVE.md`
+   from selectable sources — messages (existing export), **calendar** (.ics from
+   Google Calendar incl. its .zip export, Microsoft Outlook, Apple Calendar),
+   **contacts** (.vcf incl. vCard 2.1 quoted-printable), **call logs** (SMS
+   Backup & Restore XML). Interactive source picker or `--sources
+   all|calendar|...`; auto-discovers files in Downloads/Documents/Desktop;
+   messages digest by default with `--messages-full` to inline everything;
+   `--json` for a structured copy. NOT wired into any default flow — texting
+   stays the headline.
+
+### Code Review — what was broken and fixed
+**Critical**
+- `imessage_exporter.py` / `imessage_exporter_windows.py`: the markdown export
+  saved the shared rowid state BEFORE the AI-ready export ran, so a default
+  (no `--full`) run NEVER wrote `messages.json`/`SUMMARY.md`. Split into
+  separate state keys; incremental runs now also MERGE into the existing
+  `messages.json` instead of overwriting it with only the delta.
+- `imessage_exporter_windows.py`: only knew the flat (iOS ≤9) backup layout —
+  every iOS 10+ backup was reported "encrypted". Now resolves both flat and
+  sharded (`3d/3d0d7e...`) paths for the messages and contacts DBs.
+- `imessage_attachments.py`: three-way verify could report ✅ while Drive held
+  truncated files (existence-only check + `mirror_tree` silently swallowing
+  copy errors). Verify now size-checks Drive against the local archive;
+  mirror failures are rolled back (no partial files) and reported.
+**Major**
+- Attachments: incremental state no longer advances past rows that weren't
+  archived (offloaded/filtered/error), `--full` no longer wipes manifest
+  history (always merges; archived-then-offloaded records are kept), same
+  name+size collisions can't swallow a distinct attachment (path ownership
+  tracked via manifest), `--photos-videos` verify now filters by the same
+  types so it can pass, manifest/state writes are atomic.
+- `imessage_exporter.py`: opened chat.db read-WRITE (could create a bogus
+  empty chat.db) → strictly read-only URI; never decoded `attributedBody`
+  (dropped/mislabeled many modern-macOS messages) → now decoded; markdown day
+  files duplicated on repeated `--full` → rewrite-on-full; Apple timestamps
+  now handle legacy seconds + corrupt values without aborting the export.
+- `imessage_picker.py`: POST endpoints had no Origin check (a malicious web
+  page could trigger a full export cross-origin) → same-origin enforced;
+  empty `people` exported EVERYTHING → now a 400-style error; attachment
+  filename XSS via unsanitized extension → extension sanitized + quote
+  escaping in both escapers; CSV formula injection neutralized; re-runs no
+  longer duplicate every attachment; conversation-name lookups cached.
+- `android_sms_exporter.py`: whole-file DOM parse (GB-size MMS backups OOM'd)
+  → streaming iterparse that also survives truncated files; messages and
+  calls files are now BOTH used (newest of each kind) instead of whichever
+  was newest overall; "(Unknown)"/"null" placeholder names no longer merge
+  distinct numbers into one thread; failed/draft/outbox messages now count
+  as outgoing.
+- `desmond.sh`: stall window actually ~1 min (comment claimed 12) + first
+  iteration always counted as a stall + sqlite errors silently produced a
+  bogus "SYNC COMPLETE" → 45-check window, no first-check stall, hard error
+  with FDA instructions when chat.db is unreadable.
+- `setup_imessage_exporter.sh`: hourly launchd job can't inherit Terminal's
+  Full Disk Access — setup now prints the exact python3 binary to add to FDA.
+- `index.html`: nested intro cards permanently hidden by `hideAll()` → fixed;
+  undefined CSS var fixed. Batch files: quoted `set`, first-match python
+  resolution for the scheduled task. Both exporters now exit non-zero on
+  failure so scheduled runs can be observed failing.
+- README: corrected "nothing is uploaded" (Drive mirror is synced by the
+  Drive app), Android INDEX.md claim, added Federation + Consolidate docs.
+
+### Current Status
+- ✅ All 9 test suites pass (7 existing + 2 new; every existing suite still
+  green after the fixes).
+- ✅ New-module CLIs verified end-to-end in-container (federate incl. consent
+  refusal path; consolidate with zip calendar + vcf + messages).
+- 🚧 Real-Mac verification still pending (chat.db, Drive, browser, sips) —
+  same as before, now including the review fixes.
+
+### Branch Info
+- Branch: `claude/app-review-federation-export-bmony0` (session-assigned;
+  CLAUDE.md prefers main, but this remote session must push to its designated
+  branch). Ready to merge to main after a real-Mac smoke test.
+
+### Decisions Made
+- Federation requires explicit consent (interactive prompt or `--consented`);
+  the library API refuses to run without `consented=True`. Built as merge-of-
+  finished-exports so it never touches anyone's live Messages DB.
+- Consolidate is a separate opt-in command, not a flag on the default
+  exporter; calendar support targets .ics exports (Google/Outlook/Apple) so
+  no OAuth or network access is ever needed.
+- Consolidate's message section defaults to a digest (full inline via
+  `--messages-full`) so the .md stays uploadable.
+
+### Next Steps
+1. On the Mac: `git pull`, run `python3 desmond_export.py` + the picker to
+   smoke-test the review fixes against the real chat.db.
+2. Try federation with a real second export; try consolidate with a real
+   Google Calendar zip export.
+3. Merge to main once the Mac run looks good; delete the branch.
+
+### Questions/Blockers
+- Real-Mac verification (no Messages DB/Drive in the build container).
+
+---
+
 ## 2026-06-14 — Branch divergence fix + shareable run logs
 
 ### What We Did

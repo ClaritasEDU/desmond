@@ -36,17 +36,28 @@ echo ""
 count=0
 last_msg_count=0
 stall_count=0
-MAX_STALLS=4  # Stop after 4 checks (~12 min) with no new messages
+MAX_STALLS=45  # ~12 min of no growth (each check is ~16s) — iCloud sync
+               # routinely pauses for minutes; giving up after ~1 min would
+               # declare victory with most history still un-synced.
 
 while true; do
     count=$((count + 1))
     timestamp=$(date "+%H:%M:%S")
-    
-    # Get current message count
+
+    # Get current message count. If sqlite3 fails (no Full Disk Access, no
+    # chat.db), STOP with the real reason instead of counting "" as a stall
+    # and printing a bogus "SYNC APPEARS COMPLETE".
     current_msg_count=$(sqlite3 ~/Library/Messages/chat.db "SELECT COUNT(*) FROM message;" 2>/dev/null)
     conv_count=$(sqlite3 ~/Library/Messages/chat.db "SELECT COUNT(DISTINCT chat_id) FROM chat_message_join;" 2>/dev/null)
-    
-    # First run - just record the count
+    if ! [ "$current_msg_count" -ge 0 ] 2>/dev/null; then
+        echo "[$timestamp] ERROR: could not read ~/Library/Messages/chat.db."
+        echo "[$timestamp] Give Terminal Full Disk Access (System Settings >"
+        echo "[$timestamp] Privacy & Security > Full Disk Access), restart"
+        echo "[$timestamp] Terminal, and run ./desmond.sh again."
+        exit 1
+    fi
+
+    # First run - just record the count and skip straight to syncing
     if [ $count -eq 1 ]; then
         echo "[$timestamp] ====== STARTING ======"
         echo "[$timestamp] Messages on Mac: $current_msg_count"
@@ -59,7 +70,7 @@ while true; do
         echo ""
         last_msg_count=$current_msg_count
     fi
-    
+
     # Check if we've hit target
     if [ -n "$TARGET_MESSAGES" ] && [ "$current_msg_count" -ge "$TARGET_MESSAGES" ]; then
         echo ""
@@ -70,13 +81,14 @@ while true; do
         exit 0
     fi
     
-    # Check if messages are still growing
+    # Check if messages are still growing (iteration 1 only recorded the
+    # baseline — it can't be a "stall" yet)
     if [ "$current_msg_count" -gt "$last_msg_count" ]; then
         new_msgs=$((current_msg_count - last_msg_count))
         echo "[$timestamp] Push #$count - +$new_msgs new messages (total: $current_msg_count)"
         stall_count=0
         last_msg_count=$current_msg_count
-    else
+    elif [ $count -gt 1 ]; then
         stall_count=$((stall_count + 1))
         echo "[$timestamp] Push #$count - No new messages (check $stall_count/$MAX_STALLS)"
         

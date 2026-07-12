@@ -12,7 +12,10 @@ each pick gets its own folder with conversation.html (photos/videos inline,
 newest/oldest toggle), conversation.md, messages.json/csv, and attachments/.
 
 Run with:  python3 imessage_picker.py
-Opens automatically in your browser. Nothing is uploaded anywhere.
+Opens automatically in your browser. Everything is processed locally; nothing
+is uploaded by this tool itself. (If you keep the Google Drive mirror on, the
+Drive desktop app then syncs that copy to your Google account — turn the
+"☁︎ Also copy to Google Drive" toggle off for a purely local export.)
 """
 
 import os
@@ -175,21 +178,35 @@ def open_db():
     return sqlite3.connect(f"file:{MESSAGES_DB}?mode=ro", uri=True)
 
 
+_conv_name_cache = {}
+
+
 def conversation_name(handle_id, chat_id, display_name, cursor):
-    """Derive a human-readable conversation name (matches the main exporter)."""
+    """Derive a human-readable conversation name (matches the main exporter).
+    Cached per (handle, chat) — resolving names runs per MESSAGE, and the SQL
+    lookups behind group participants made the picker crawl on big histories."""
+    key = (handle_id, chat_id, display_name)
+    hit = _conv_name_cache.get(key)
+    if hit is not None:
+        return hit
     if display_name:
-        return display_name, "group"
-    if chat_id:
+        result = (display_name, "group")
+    elif chat_id:
         name = core.lookup_contact_name(chat_id)
         if name == chat_id or str(name).startswith("chat"):
             participants = core.get_chat_participants(chat_id, cursor)
             if participants:
-                return participants, "group"
-            return chat_id, "unknown"
-        return name, "direct"
-    if handle_id:
-        return core.get_contact_name(handle_id, cursor), "direct"
-    return "Unknown", "direct"
+                result = (participants, "group")
+            else:
+                result = (chat_id, "unknown")
+        else:
+            result = (name, "direct")
+    elif handle_id:
+        result = (core.get_contact_name(handle_id, cursor), "direct")
+    else:
+        result = ("Unknown", "direct")
+    _conv_name_cache[key] = result
+    return result
 
 
 def iter_messages(cursor, since_apple=None, until_apple=None):
@@ -400,7 +417,8 @@ def apply_order(records, order):
 
 def _h(text):
     return (str(text or "")
-            .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+            .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            .replace('"', "&quot;").replace("'", "&#39;"))
 
 
 def _att_filename(rec, original):
@@ -422,21 +440,36 @@ def copy_attachment(a, rec, folder):
     adir = os.path.join(folder, ATTACH_SUBDIR)
     os.makedirs(adir, exist_ok=True)
     dest = os.path.join(adir, _att_filename(rec, original))
+    already = False
     if os.path.exists(dest):
-        root, ext = os.path.splitext(dest)
-        dest = f"{root}_{abs(hash(src)) % 100000}{ext}"
-    try:
-        shutil.copy2(src, dest)  # byte-for-byte copy of the original + its mtime
-    except Exception:
-        return {"category": category, "name": original, "missing": True}
+        # Same bytes already here (a re-run / --retry pass) → reuse it; only
+        # take a suffixed name for a genuinely different file.
+        try:
+            already = os.path.getsize(dest) == os.path.getsize(src)
+        except OSError:
+            already = False
+        if not already:
+            root, ext = os.path.splitext(dest)
+            dest = f"{root}_{abs(hash(src)) % 100000}{ext}"
+            try:
+                already = (os.path.exists(dest)
+                           and os.path.getsize(dest) == os.path.getsize(src))
+            except OSError:
+                already = False
+    if not already:
+        try:
+            shutil.copy2(src, dest)  # byte-for-byte copy of the original + its mtime
+        except Exception:
+            return {"category": category, "name": original, "missing": True}
     rel = os.path.relpath(dest, folder).replace(os.sep, "/")
     display = rel
     if os.path.splitext(dest)[1].lower() in WEB_CONVERT_EXTS:
         # Also make a JPG so HEIC/TIFF show in any browser; the original is kept.
         jpg = os.path.splitext(dest)[0] + ".jpg"
         try:
-            subprocess.run(["sips", "-s", "format", "jpeg", dest, "--out", jpg],
-                           check=True, capture_output=True)
+            if not os.path.exists(jpg):
+                subprocess.run(["sips", "-s", "format", "jpeg", dest, "--out", jpg],
+                               check=True, capture_output=True)
             display = os.path.relpath(jpg, folder).replace(os.sep, "/")
         except Exception:
             pass
@@ -482,7 +515,7 @@ const RECORDS = __RECORDS__;
 const PAGE_SIZE = 100;            // paginate so huge threads don't crash the browser
 let order = "__DEFAULT_ORDER__";
 let sorted = [], shown = 0, lastPerson = null, lastDay = null;
-function esc(s){return (s||"").replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));}
+function esc(s){return (s||"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
 function media(m){
   if(m.missing) return '<div class="miss">['+esc(m.category)+' — not downloaded from iCloud]</div>';
   const p=esc(m.path), d=esc(m.display||m.path);
@@ -655,6 +688,12 @@ def export_records(records, people, f):
             row["attachment_types"] = ",".join(row.get("attachment_types") or [])
             row["attachment_files"] = ",".join(
                 m["path"] for m in media_by_id[r["id"]] if not m.get("missing"))
+            # Message text is written by whoever texted you — neutralize
+            # leading formula characters so Excel/Sheets shows them as text
+            # instead of executing =/+/-/@ formulas.
+            text = row.get("text")
+            if isinstance(text, str) and text[:1] in ("=", "+", "-", "@"):
+                row["text"] = "'" + text
             writer.writerow(row)
 
     # 5. Mirror the whole export to Google Drive (so picks live local + Drive).
@@ -1106,6 +1145,17 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         return json.loads(self.rfile.read(length) or "{}")
 
+    def _same_origin(self):
+        """Only our own page may call the POST endpoints. A random website the
+        user visits while the picker runs can fire cross-origin POSTs at
+        127.0.0.1 (a CORS 'simple request' needs no preflight) — without this
+        check it could silently trigger a full export to disk/Drive."""
+        origin = self.headers.get("Origin")
+        if origin is None:            # same-machine curl/scripts have no Origin
+            return True
+        return origin.rstrip("/") in (f"http://127.0.0.1:{PORT}",
+                                      f"http://localhost:{PORT}")
+
     def do_GET(self):
         if self.path == "/" or self.path.startswith("/index"):
             page = PAGE.replace("__DEFAULT_DEST__", _h(default_dest()))
@@ -1123,6 +1173,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
+            if not self._same_origin():
+                self._send(403, json.dumps({"ok": False,
+                                            "error": "cross-origin request refused"}))
+                return
             payload = self._read_json()
             if self.path == "/api/preview":
                 records = apply_order(gather(payload), payload.get("order", "oldest"))
@@ -1132,9 +1186,18 @@ class Handler(BaseHTTPRequestHandler):
                     "redacted": bool(payload.get("redact")),
                 }))
             elif self.path == "/api/export":
+                people = payload.get("people") or []
+                if not people:
+                    # An empty selection must export NOTHING — without this
+                    # guard it would export every conversation.
+                    self._send(200, json.dumps({
+                        "ok": False,
+                        "error": "No people selected — pick at least one "
+                                 "conversation before exporting."}))
+                    return
                 deselected = set(payload.get("deselected") or [])
                 records = [r for r in gather(payload) if r["id"] not in deselected]
-                self._send(200, json.dumps(export_records(records, payload.get("people") or [], payload)))
+                self._send(200, json.dumps(export_records(records, people, payload)))
             else:
                 self._send(404, json.dumps({"error": "not found"}))
         except Exception as e:

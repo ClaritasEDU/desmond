@@ -24,9 +24,10 @@ What it does
       │   └── 2024-03-02_1810_video.MOV
       └── ...
 
-- Files are named "<date>_<time>_<original-name>" so they sort chronologically
-  and stay recognizable. The manifest links each file back to the conversation,
-  sender, timestamp, and the message text it came with.
+- Files are named "<date>_<time>_<people>_<original-name>" (e.g.
+  "2024-01-15_0932_Mom_IMG_1234.HEIC") so they sort chronologically, name the
+  people in the chat, and stay recognizable. The manifest links each file back
+  to the conversation, sender, timestamp, and the message text it came with.
 
 Google Drive
 ------------
@@ -55,6 +56,7 @@ import argparse
 import csv
 import glob
 import json
+import mimetypes
 import os
 import shutil
 import sqlite3
@@ -118,9 +120,10 @@ def drive_archive_dir(drive_dir=None):
     return os.path.join(drive, ARCHIVE_FOLDER_NAME) if drive else None
 
 
-def mirror_tree(src_dir, dest_dir):
+def mirror_tree(src_dir, dest_dir, errors=None):
     """Incrementally copy src_dir → dest_dir (skip files already present with the
-    same size). Returns the number of files newly copied/updated."""
+    same size). Returns the number of files newly copied/updated. A failed copy
+    is rolled back (no partial file left behind) and reported via `errors`."""
     copied = 0
     for root, _dirs, files in os.walk(src_dir):
         rel = os.path.relpath(root, src_dir)
@@ -134,9 +137,26 @@ def mirror_tree(src_dir, dest_dir):
                     continue
                 shutil.copy2(s, d)
                 copied += 1
-            except Exception:
-                pass
+            except Exception as e:
+                # A partial file would look complete to an existence check —
+                # remove it so verify sees the truth and a re-run re-copies it.
+                try:
+                    if os.path.exists(d):
+                        os.remove(d)
+                except OSError:
+                    pass
+                if errors is not None:
+                    errors.append({"file": s, "error": str(e)})
     return copied
+
+
+def _atomic_json_dump(payload, path):
+    """Write JSON via a temp file + rename, so an interrupted run can never
+    leave a truncated manifest/state file behind."""
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+    os.replace(tmp, path)
 
 
 def mirror_to_drive(src_dir, drive_dir=None):
@@ -151,7 +171,13 @@ def mirror_to_drive(src_dir, drive_dir=None):
         print("Install 'Google Drive for desktop' (or pass --drive PATH) to also "
               "copy them to Drive.")
         return None
-    n = mirror_tree(src_dir, dest)
+    errors = []
+    n = mirror_tree(src_dir, dest, errors=errors)
+    if errors:
+        print(f"\n⚠️  {len(errors)} file(s) FAILED to copy to Google Drive "
+              "(disk full? Drive paused?). They are still safe locally — "
+              "re-run to retry. First failure:")
+        print(f"   {errors[0]['file']}: {errors[0]['error']}")
     print(f"\nAttachments now live in BOTH places ({n:,} new/updated on Drive):")
     print(f"  Local:        {src_dir}")
     print(f"  Google Drive: {dest}")
@@ -178,7 +204,12 @@ def decode_attributed_body(data):
         return None
 
 
-def categorize(mime_type):
+def categorize(mime_type, name=None):
+    """Categorize by MIME type, falling back to the filename's extension —
+    a real chat.db has rows whose mime_type is NULL but whose name/uti make
+    the type obvious (those are still photos/videos to a human)."""
+    if not mime_type and name:
+        mime_type = mimetypes.guess_type(str(name))[0]
     if not mime_type:
         return "file"
     if mime_type.startswith("image"):
@@ -238,8 +269,7 @@ def load_state(state_file):
 
 def save_state(state_file, state):
     os.makedirs(os.path.dirname(state_file), exist_ok=True)
-    with open(state_file, "w") as f:
-        json.dump(state, f)
+    _atomic_json_dump(state, state_file)
 
 
 def iter_attachment_rows(cursor, since_rowid):
@@ -293,6 +323,26 @@ def archive_attachments(
     cursor = conn.cursor()
     rows = iter_attachment_rows(cursor, since)
 
+    # Load the existing manifest up front. It powers two things:
+    #   1. the CUMULATIVE merge (a --full run must never erase history), and
+    #   2. collision detection — which archive path belongs to which attachment,
+    #      so two different files that sanitize to the same name never swallow
+    #      each other.
+    prior_records = {}
+    manifest_path = os.path.join(output_dir, "attachments.json")
+    if os.path.exists(manifest_path):
+        try:
+            with open(manifest_path, encoding="utf-8") as ef:
+                for a in json.load(ef).get("attachments", []):
+                    if a.get("attachment_id") is not None:
+                        prior_records[a["attachment_id"]] = a
+        except Exception:
+            print("⚠️  Existing attachments.json was unreadable (interrupted "
+                  "run?) — it will be rebuilt. Run --full once to restore "
+                  "every record.")
+    claimed = {a["saved_path"]: rid for rid, a in prior_records.items()
+               if a.get("saved_path")}
+
     records = []
     missing = []
     by_conversation = defaultdict(lambda: {"count": 0, "bytes": 0})
@@ -301,6 +351,16 @@ def archive_attachments(
     copied_bytes = 0
     skipped_existing = 0
     max_rowid = since
+    # The incremental state may only advance past rows that are fully settled
+    # (copied or already archived). A row that was filtered out, offloaded in
+    # iCloud, or failed to copy stays "unresolved" so future default runs
+    # revisit it instead of skipping it forever.
+    unresolved_min = None
+
+    def unresolved(att_id):
+        nonlocal unresolved_min
+        if unresolved_min is None or att_id < unresolved_min:
+            unresolved_min = att_id
 
     if not dry_run:
         os.makedirs(output_dir, exist_ok=True)
@@ -312,14 +372,19 @@ def archive_attachments(
 
         max_rowid = max(max_rowid, att_id)
 
-        category = categorize(mime_type)
+        category = categorize(mime_type, transfer_name or filename)
         if types and category not in types:
+            unresolved(att_id)   # a later unfiltered run still needs this row
             continue
 
         if not filename:
-            # No on-disk file reference at all (rare) — record as missing.
+            # No on-disk file reference at all (rare) — it can never be
+            # downloaded or archived; record it and settle it.
             missing.append({"attachment_id": att_id, "name": transfer_name or "(unknown)",
                             "reason": "no file path in database"})
+            records.append({"attachment_id": att_id,
+                            "original_name": transfer_name or "(unknown)",
+                            "status": "no_file_path", "saved_path": None})
             continue
 
         src = os.path.expanduser(filename)
@@ -374,32 +439,48 @@ def archive_attachments(
                 "reason": "not downloaded (likely offloaded to iCloud)",
             })
             records.append(record)
+            unresolved(att_id)   # revisit once it's downloaded from iCloud
             continue
 
         rel_path = os.path.join(conv_clean, target_name)
         dest = os.path.join(output_dir, rel_path)
+
+        # If this archive path already belongs to a DIFFERENT attachment (two
+        # files can share a name, minute, and even byte size), take a unique
+        # name instead of silently treating ours as archived.
+        owner = claimed.get(rel_path)
+        if owner is not None and owner != att_id:
+            base, ext = os.path.splitext(rel_path)
+            rel_path = f"{base}_{att_id}{ext}"
+            dest = os.path.join(output_dir, rel_path)
         record["saved_path"] = rel_path
 
+        already = os.path.exists(dest) and os.path.getsize(dest) == size
         if dry_run:
-            record["status"] = "would_copy"
+            record["status"] = "already_archived" if already else "would_copy"
+            if already:
+                skipped_existing += 1
+        elif already:
+            record["status"] = "already_archived"
+            skipped_existing += 1
         else:
             os.makedirs(os.path.dirname(dest), exist_ok=True)
-            # Avoid collisions and avoid re-copying identical files.
-            if os.path.exists(dest) and os.path.getsize(dest) == size:
-                record["status"] = "already_archived"
-                skipped_existing += 1
-            else:
-                if os.path.exists(dest):
-                    base, ext = os.path.splitext(dest)
-                    dest = f"{base}_{att_id}{ext}"
-                    record["saved_path"] = os.path.relpath(dest, output_dir)
+            # copy2 overwrites in place — this also heals a truncated partial
+            # file left under our own name by an interrupted earlier run.
+            try:
+                shutil.copy2(src, dest)
+                record["status"] = "copied"
+            except Exception as e:
+                record["status"] = f"error: {e}"
                 try:
-                    shutil.copy2(src, dest)
-                    record["status"] = "copied"
-                except Exception as e:
-                    record["status"] = f"error: {e}"
-                    records.append(record)
-                    continue
+                    if os.path.exists(dest):
+                        os.remove(dest)   # never leave a partial file behind
+                except OSError:
+                    pass
+                records.append(record)
+                unresolved(att_id)
+                continue
+        claimed[rel_path] = att_id
 
         if record["status"] in ("copied", "would_copy"):
             copied_count += 1
@@ -429,22 +510,24 @@ def archive_attachments(
     }
 
     if not dry_run:
-        # Keep the manifest CUMULATIVE: merge this run's records with any
-        # existing manifest so incremental runs never lose earlier history.
-        merged = {}
-        existing = os.path.join(output_dir, "attachments.json")
-        if not full and os.path.exists(existing):
-            try:
-                with open(existing, encoding="utf-8") as ef:
-                    for a in json.load(ef).get("attachments", []):
-                        if a.get("attachment_id") is not None:
-                            merged[a["attachment_id"]] = a
-            except Exception:
-                pass
+        # Keep the manifest CUMULATIVE: merge this run's records with the
+        # existing manifest so NO run — incremental or --full — ever loses
+        # earlier history.
+        merged = dict(prior_records)
         for r in records:
+            old = merged.get(r["attachment_id"])
+            if (old and old.get("saved_path") and r.get("status") == "missing"
+                    and os.path.exists(os.path.join(output_dir, old["saved_path"]))):
+                # The original has since been offloaded from the Mac, but we
+                # archived it earlier — keep the archived record rather than
+                # downgrading it to "missing".
+                continue
             merged[r["attachment_id"]] = r
         write_manifests(list(merged.values()), output_dir)
-        state["last_attachment_rowid"] = max_rowid
+        if unresolved_min is not None:
+            state["last_attachment_rowid"] = min(max_rowid, unresolved_min - 1)
+        else:
+            state["last_attachment_rowid"] = max_rowid
         state["last_run"] = datetime.now().isoformat()
         save_state(state_file, state)
 
@@ -455,12 +538,16 @@ def archive_attachments(
 
 
 def safe_name_keep_ext(name):
-    """Sanitize a filename but preserve its extension."""
+    """Sanitize a filename while keeping a recognizable extension. The
+    extension is sanitized too — a sender controls the original filename, and
+    an unsanitized extension (e.g. `.jpg" onerror="…`) would otherwise flow
+    into the src="…" attributes of the generated HTML transcripts."""
     base, ext = os.path.splitext(name)
     cleaned = "".join(
         c if c.isalnum() or c in (" ", "-", "_", "(", ")", ".") else "_" for c in base
     ).strip()
-    return (cleaned or "attachment")[:120] + ext
+    ext_cleaned = "".join(c for c in ext if c.isalnum() or c == ".")[:10]
+    return (cleaned or "attachment")[:120] + ext_cleaned
 
 
 def write_manifests(records, output_dir):
@@ -481,20 +568,18 @@ def write_manifests(records, output_dir):
         by_conversation[conv]["count"] += 1
         by_conversation[conv]["bytes"] += size
 
-    # JSON
-    with open(os.path.join(output_dir, "attachments.json"), "w", encoding="utf-8") as f:
-        json.dump(
-            {
-                "generated": datetime.now().isoformat(),
-                "output_dir": output_dir,
-                "copied_count": len(copied),
-                "copied_bytes": total_bytes,
-                "missing_count": len(missing),
-                "attachments": records,
-            },
-            f,
-            indent=2,
-        )
+    # JSON (atomic — an interrupted run can't truncate the manifest)
+    _atomic_json_dump(
+        {
+            "generated": datetime.now().isoformat(),
+            "output_dir": output_dir,
+            "copied_count": len(copied),
+            "copied_bytes": total_bytes,
+            "missing_count": len(missing),
+            "attachments": records,
+        },
+        os.path.join(output_dir, "attachments.json"),
+    )
 
     # CSV
     fields = ["attachment_id", "conversation", "sender", "is_from_me", "timestamp",
@@ -577,7 +662,8 @@ def _is_inside(child, parent):
 def all_attachment_rows(cursor):
     """Every attachment that belongs to a message (the archiver's scope)."""
     cursor.execute("""
-        SELECT attachment.ROWID, attachment.filename, attachment.total_bytes
+        SELECT attachment.ROWID, attachment.filename, attachment.total_bytes,
+               attachment.mime_type, attachment.transfer_name
         FROM attachment
         JOIN message_attachment_join
           ON attachment.ROWID = message_attachment_join.attachment_id
@@ -587,13 +673,16 @@ def all_attachment_rows(cursor):
 
 def verify_archive(db_path=MESSAGES_DB, output_dir=None, drive_dir=None,
                    drive_mirror=None, expect_drive=True, verbose=True,
-                   write_report=True):
+                   write_report=True, types=None):
     """Three-way reconciliation: Messages (the device) vs the LOCAL archive vs
     the GOOGLE DRIVE mirror. Confirms every downloadable attachment is present in
     all three places, and flags what's offloaded in iCloud or missing anywhere.
 
     `drive_mirror` may be passed explicitly (e.g. by the unified exporter, whose
     Drive folder differs); otherwise it's derived from `drive_dir`.
+    `types` restricts the check to the same categories the backup ran with
+    (e.g. {"photo", "video"} for --photos-videos), so a filtered backup can
+    verify clean.
     """
     output_dir = output_dir or default_output_dir()
     manifest_path = os.path.join(output_dir, "attachments.json")
@@ -611,8 +700,16 @@ def verify_archive(db_path=MESSAGES_DB, output_dir=None, drive_dir=None,
             print("=" * 60)
         return {"complete": False, "reason": "no_manifest", "output_dir": output_dir}
 
-    with open(manifest_path, encoding="utf-8") as f:
-        manifest = json.load(f)
+    try:
+        with open(manifest_path, encoding="utf-8") as f:
+            manifest = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        if verbose:
+            print("⚠️  attachments.json is unreadable (interrupted run?) — "
+                  "re-run the backup with --full to rebuild it, then verify "
+                  "again.")
+        return {"complete": False, "reason": "manifest_unreadable",
+                "output_dir": output_dir}
     man_by_id = {a.get("attachment_id"): a for a in manifest.get("attachments", [])}
 
     conn = open_db(db_path)
@@ -621,10 +718,16 @@ def verify_archive(db_path=MESSAGES_DB, output_dir=None, drive_dir=None,
     conn.close()
 
     expected = {}
-    for rid, filename, total in rows:
+    unarchivable = 0
+    for rid, filename, total, mime_type, transfer_name in rows:
+        if types and categorize(mime_type, transfer_name or filename) not in types:
+            continue
+        if not filename:
+            unarchivable += 1   # no file path in the DB — can never come down
+            continue
         expected[rid] = {
             "total": total,
-            "on_disk": bool(filename) and os.path.exists(os.path.expanduser(filename)),
+            "on_disk": os.path.exists(os.path.expanduser(filename)),
         }
 
     downloadable = in_local = in_drive = offloaded = size_warn = 0
@@ -653,19 +756,29 @@ def verify_archive(db_path=MESSAGES_DB, output_dir=None, drive_dir=None,
             if drive_mirror is not None:
                 missing_drive_list.append(detail(rid))
             continue
-        if os.path.exists(os.path.join(output_dir, saved)):
+        local_path = os.path.join(output_dir, saved)
+        local_size = None
+        if os.path.exists(local_path):
             in_local += 1
             try:
-                if info["total"] and abs(
-                        os.path.getsize(os.path.join(output_dir, saved))
-                        - info["total"]) > 1024:
+                local_size = os.path.getsize(local_path)
+                if info["total"] and abs(local_size - info["total"]) > 1024:
                     size_warn += 1
             except OSError:
                 pass
         else:
             missing_local_list.append(detail(rid))
         if drive_mirror is not None:
-            if os.path.exists(os.path.join(drive_mirror, saved)):
+            drive_path = os.path.join(drive_mirror, saved)
+            try:
+                # A Drive copy only counts if its size matches the local
+                # archive file — a truncated/partial mirror is NOT a backup.
+                drive_ok_file = os.path.exists(drive_path) and (
+                    local_size is None
+                    or os.path.getsize(drive_path) == local_size)
+            except OSError:
+                drive_ok_file = False
+            if drive_ok_file:
                 in_drive += 1
             else:
                 missing_drive_list.append(detail(rid))
@@ -727,8 +840,8 @@ def verify_archive(db_path=MESSAGES_DB, output_dir=None, drive_dir=None,
             print(f"  ⚠️  Missing from DRIVE:     {missing_drive:,} "
                   "→ re-run the backup to mirror them up")
         if size_warn:
-            print(f"  ℹ️  {size_warn:,} file(s) differ in size — usually fine if "
-                  "Drive set them to 'online only'.")
+            print(f"  ℹ️  {size_warn:,} local file(s) differ in size from what "
+                  "Messages reports — open them to spot-check.")
         if complete and offloaded == 0:
             print(f"  ✅ ALL {downloadable:,} attachments are present in all three "
                   "places.")
@@ -853,6 +966,7 @@ def main():
     parser.add_argument("--no-verify", action="store_true",
                         help="Skip the automatic verification pass after archiving.")
     args = parser.parse_args()
+    args.db = os.path.expanduser(args.db)
 
     if not os.path.exists(args.db):
         print("Could not find your Messages database at "
@@ -870,7 +984,8 @@ def main():
     # Verify-only mode: three-way report (device vs local vs Drive), copy nothing.
     if args.verify:
         res = verify_archive(db_path=args.db, output_dir=output_dir,
-                             drive_dir=drive_override, expect_drive=expect_drive)
+                             drive_dir=drive_override, expect_drive=expect_drive,
+                             types=types)
         sys.exit(0 if res.get("complete") else 1)
 
     def run_once(full):
@@ -890,7 +1005,8 @@ def main():
             return None
         print("\nVerifying (device vs local vs Google Drive)…")
         return verify_archive(db_path=args.db, output_dir=output_dir,
-                              drive_dir=drive_override, expect_drive=expect_drive)
+                              drive_dir=drive_override, expect_drive=expect_drive,
+                              types=types)
 
     try:
         if args.retry is not None and not args.dry_run:

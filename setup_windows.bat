@@ -31,12 +31,13 @@ if %ERRORLEVEL% neq 0 (
     exit /b 1
 )
 
-REM Get Python path
-for /f "delims=" %%i in ('where python') do set PYTHON_PATH=%%i
+REM Get Python path (first match = what `python` itself resolves to;
+REM the LAST match is often the useless WindowsApps store alias)
+for /f "delims=" %%i in ('where python') do if not defined PYTHON_PATH set "PYTHON_PATH=%%i"
 
 REM Get the directory of this batch file
-set SCRIPT_DIR=%~dp0
-set EXPORTER_PATH=%SCRIPT_DIR%imessage_exporter_windows.py
+set "SCRIPT_DIR=%~dp0"
+set "EXPORTER_PATH=%SCRIPT_DIR%imessage_exporter_windows.py"
 
 echo Python found at: %PYTHON_PATH%
 echo Exporter found at: %EXPORTER_PATH%

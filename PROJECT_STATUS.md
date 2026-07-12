@@ -4,96 +4,103 @@
 > **Category:** Infrastructure
 > **Local Path:** `~/desmond/`
 
-## Overall Progress: ~92%
+## Overall Progress: ~95%
 
-v1 shipped (cross-platform message **text** exporters). Now: **real attachment
-archiving** (the actual photos/videos/files) and an upgraded picker that shows
-media **inline**, **date/time ordered** with a newest↔oldest toggle — all
-Google Drive-ready.
+v1 shipped (cross-platform message **text** exporters) plus attachment
+archiving with three-way verify. This session: a **full code review with all
+critical/major bugs fixed**, a **federation module** (merge two people's
+exports into one shared, consent-based archive), and an **optional
+consolidate mode** (one `PERSONAL_ARCHIVE.md` from messages + calendar +
+contacts + calls). Text messages remain the default use case.
 
 ## What's Working
-- **⭐ One-shot full exporter** (`desmond_export.py` + `desmond_export.sh`) — a
-  SINGLE command that exports the whole history into one browsable archive: open
-  `index.html`, click a conversation, read the full thread with **photos/videos
-  inline, date-ordered** (newest/oldest toggle), real attachments copied in.
-  Saved **locally + mirrored to Google Drive**, then **three-way verified** with a
-  report. Flags: `--photos-videos`, `--newest`, `--no-drive`, `--drive`, `--retry`.
-  Transcripts and the conversation list **paginate (100/page)** so huge histories
-  open instantly. Writes a **PII-safe run log** to `~/Downloads/Desmond_Logs/`
-  (counts/env/errors, shareable). It's the headline path (web guide + README lead
-  with it); orchestrates the building blocks below.
-- **iMessage exporter** (`imessage_exporter.py`) — full + incremental text exports
-  to JSON/CSV/markdown, contact name lookup, reactions, attachments (as labels),
-  effects. **NEW:** saves locally **and** copies to Google Drive
-  (`Desmond_Messages_Export/`) so the text archive lives in both places
-  (`--no-drive` / `--drive PATH` to control).
-- **Browser message picker** (`imessage_picker.py`) — pick/search people, choose a
-  range, preview, trim, redact. Copies the **real photos/videos/files** and renders
-  them **inline** in a `conversation.html` transcript with a live **newest/oldest**
-  order toggle; filenames lead with date/time + the people in the chat. **NEW:**
-  each pick is saved **locally and mirrored to Google Drive**, then **verified**
-  (UI shows `local N/N, Drive N/N`) with a per-export `VERIFY_REPORT.md`.
-- **NEW: Attachment archiver** (`imessage_attachments.py` + `desmond_attachments.sh`)
-  — copies the **real** photos/videos/audio/files out of Messages into an
-  organized, browsable archive that lives in **both** places: a **local** primary
-  copy **and** a **Google Drive** mirror (incremental `mirror_tree`). Per-contact
-  folders, `YYYY-MM-DD_HHMM_people_name` filenames, cumulative JSON/CSV/MD manifest.
-  Reads the DB read-only; incremental; `--dry-run` sizing; `--photos-videos`;
-  `--no-drive` / `--drive PATH`; `--retry [N]` loops until complete.
-- **NEW: Three-way verification + report** (`--verify` / `desmond_verify.sh`) —
-  reconciles **device (Messages) vs local vs Google Drive**, prints per-place
-  counts, and writes `VERIFY_REPORT.md` + `verify_diff.json` listing exactly
-  what's missing where (and what's offloaded in iCloud). Runs automatically after
-  a backup; `--retry` drives it to a full archive; exit code is scriptable.
-- **Windows (iPhone backup)** and **Android (SMS XML)** text exporters.
-- **Web setup guide** (`index.html`).
+- **⭐ One-shot full exporter** (`desmond_export.py`) — whole history into one
+  browsable archive (inline media, pagination, local + Google Drive,
+  three-way verified, PII-safe run logs). Still the headline path.
+- **iMessage exporter** (`imessage_exporter.py`) — **fixed this session:**
+  default (incremental) runs now actually produce `messages.json` /
+  `SUMMARY.md` (state bug), incremental runs merge instead of overwriting
+  history, `attributedBody` text is decoded (modern macOS messages no longer
+  dropped), DB opened strictly read-only, legacy/corrupt timestamps handled,
+  `--full` no longer duplicates markdown day files.
+- **Attachment archiver + 3-way verify** (`imessage_attachments.py`) —
+  **fixed this session:** verify can no longer report ✅ over truncated Drive
+  copies (size-checked; failed mirrors rolled back + reported), incremental
+  state can't skip unarchived rows anymore, `--full` keeps manifest history,
+  name+size collisions can't swallow attachments, `--photos-videos` verify
+  filters by type, manifest/state writes are atomic.
+- **Browser picker** (`imessage_picker.py`) — **fixed this session:**
+  same-origin check on the API (blocks cross-site export triggering), empty
+  selection no longer exports everything, filename-extension XSS closed, CSV
+  formula injection neutralized, duplicate attachment copies on re-run fixed,
+  big-history load sped up via name caching.
+- **Windows (iPhone) exporter** — **fixed this session:** now reads iOS 10+
+  sharded backups (was 100% broken on any modern backup), same state/merge
+  fixes as the Mac exporter, non-zero exit on failure for Task Scheduler.
+- **Android exporter** — **fixed this session:** streams huge MMS backups
+  (no more OOM), reads the newest messages file AND the newest calls file,
+  survives truncated XML, unknown numbers no longer merge into one
+  "(Unknown)" thread, failed/draft messages counted as outgoing.
+- **NEW: Federation, online-app-ready** (`desmond_federate.py`) — merges two
+  people's exports (e.g. husband + wife) with the mutual thread deduplicated
+  and rebuilt from both phones; consent enforced. The whole merge is a pure
+  in-memory API for the upcoming online app: `parse_export()` validates
+  uploads (bytes/str/dict), `federate_data(..., consented=True,
+  consent_records=[...])` returns the merged archive + rendered markdown as
+  strings, no filesystem; payload versioned `desmond-federated/1`. CLI
+  unchanged (writes `Desmond_Federated_Archive/`). Stdlib only.
+- **NEW: Optional consolidate mode with ONLINE calendars**
+  (`desmond_consolidate.py`) — ONE `PERSONAL_ARCHIVE.md` from selectable
+  sources: messages, calendar, contacts (.vcf), call logs (Android).
+  Calendar is online-first: paste your **Google Calendar secret iCal
+  address** or **Outlook published ICS link** once (`--calendar-url` +
+  `--remember`, or the interactive prompt) and every run fetches it live —
+  no .zip export dance. Links stored chmod-600 in
+  `~/.desmond/calendar_feeds.json`, never printed in full;
+  `--forget-calendar-urls` clears. Exported .ics/.zip files remain the
+  offline fallback. NOT part of any default flow.
+- **Web setup guide** (`index.html`) — navigation bug fixed (intro cards were
+  permanently hidden), plus `desmond.sh` sync-watcher fixes (real 12-min
+  stall window, hard error when chat.db is unreadable instead of a fake
+  "SYNC COMPLETE").
 
 ## What's Broken
-- Nothing known broken.
+- Nothing known broken. (This session's review fixed 3 critical and ~12 major
+  issues — see SESSION_NOTES 2026-07-12 for the full list.)
 
 ## What's In Progress / Needs Real-Mac Verification
-- **Attachment archiver + 3-way verify** — logic validated by a synthetic-DB test
-  (`test_imessage_attachments.py`, 29 checks pass, incl. mirror, three-way verify,
-  Drive/local tamper, retry-restore, report contents) but **not yet run against a
-  real `~/Library/Messages/chat.db`** or a real Google Drive folder (none in the
-  Linux container). First real run + verify must happen on Chris's Mac.
-- **Picker inline media + Drive mirror/verify** — validated by
-  `test_imessage_picker.py` (23 checks pass); still needs a real-Mac/browser run to
-  confirm HEIC→JPG via `sips`, video playback, the order toggle, and the Drive
-  mirror against a live DB.
+- All fix and feature work is validated by synthetic-DB tests (9 suites, all
+  passing) but **not yet run against a real Mac** (chat.db, Google Drive,
+  browser, `sips`). First real run must happen on Chris's Mac.
 
 ## Tech Stack
-- Python 3 (stdlib only — sqlite3, shutil, http.server). No external dependencies.
+- Python 3 (stdlib only — sqlite3, shutil, http.server, xml, zipfile).
+  No external dependencies.
 
 ## Next Steps
-1. On the Mac: `cd ~/desmond && git pull` then `python3 desmond_export.py` (or
-   `--retry`) — open `index.html`, confirm inline media + a ✅ three-way verify,
-   and that it's in both local and Google Drive.
-2. Sanity-check memory/time on a very large history (the unified exporter loads
-   all records in one pass; could stream per-conversation if needed).
-3. Decide: add attachment extraction to the **Windows (iPhone backup)** and
-   **Android (MMS base64)** paths so non-Mac users get media too.
+1. On the Mac: `cd ~/desmond && git pull`, run `python3 desmond_export.py`
+   and the picker — confirm the review fixes against the real database.
+2. Connect a real calendar: `python3 desmond_consolidate.py --sources
+   calendar --calendar-url "SECRET_ICAL_LINK" --remember` (Google: Settings →
+   Integrate calendar → Secret address; Outlook: Publish a calendar → ICS).
+3. Next session: build the online federation app on top of
+   `federate_data()` / `parse_export()` (library side is ready).
+4. Merge `claude/app-review-federation-export-bmony0` to main; delete branch.
 
 ## Blockers
-- Final verification of both the archiver and picker requires Chris's Mac
-  (build container has no Messages DB or Attachments folder).
+- Real-Mac verification (build container has no Messages DB, Drive, or GUI).
 
 ## Last Session
-- **Date:** 2026-06-14
-- **Branch:** `claude/nifty-cori-60alcq`
-- **Summary:** Built the iMessage **attachment archiver** (real photos/videos/files
-  → Google Drive-ready archive, incremental, dry-run sizing, offloaded reporting),
-  upgraded the **picker** to copy real attachments + render them **inline** with a
-  **newest/oldest** toggle and date/time+people filenames, and added **backup
-  verification** (`--verify`/`desmond_verify.sh`) that confirms everything reached
-  the Drive archive, made the **text export live local + Google Drive**, made
-  **attachments live local + Drive** too, and added **three-way verification**
-  (device vs local vs Drive) with a **diff report** (`VERIFY_REPORT.md`) and a
-  **`--retry`** loop to drive to a full archive, and gave the **picker** the same
-  local + Drive + verify treatment, then unified it all into **`desmond_export.py`**
-  — one command for the whole archive (text + media inline, local + Drive,
-  verified). Made it the single headline path (web guide + README) and added
-  **pagination (100/page)** so huge histories don't crash the browser, plus
-  **PII-safe run logs** (`desmond_log.py`) the user can share. Also fixed a branch
-  divergence (rebased onto merged main). Five test suites (89 checks total, all
-  passing); docs updated.
+- **Date:** 2026-07-12 (two parts, same branch)
+- **Branch:** `claude/app-review-federation-export-bmony0`
+- **Summary:** Part 1 — full-repo code review via 4 parallel review passes;
+  fixed all confirmed critical/major findings (never-written messages.json
+  state bug on Mac+Windows, iOS 10+ backup layout, verify-lies-about-Drive,
+  incremental state skipping attachments, picker CSRF/XSS/CSV-injection,
+  Android OOM + calls-file handling, desmond.sh false "complete", and more);
+  built federation + optional consolidate mode with 2 new test suites.
+  Part 2 — refactored federation into a pure in-memory API
+  (`federate_data`/`parse_export` + consent trail) ready for the online
+  federation app coming in a future session, and made calendar integration
+  online-first: Google/Outlook private iCal feed URLs fetched live,
+  remembered securely (chmod 600), no .zip exports needed. All 9 suites pass.
