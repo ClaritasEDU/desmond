@@ -195,6 +195,27 @@ def main():
     check("connected" in html.lower() and "Chris" in html,
           "google redirect lands, exchanges, and confirms in-browser")
 
+    # A provider exploding mid-redirect must show the friendly page, not
+    # drop the connection (do_GET exception guard).
+    code2, resp2 = call("/api/calendar/google/start", {"parent": "Chris"})
+    state2 = dict(p.split("=", 1) for p in
+                  resp2["url"].split("?", 1)[1].split("&"))["state"]
+    real_http, boom = ca._http, (lambda *a, **k: (_ for _ in ()).throw(
+        RuntimeError("provider exploded")))
+    ca._http = boom
+    try:
+        req = urllib.request.Request(
+            f"{base}/oauth/google?code=X&state={state2}")
+        try:
+            with urllib.request.urlopen(req) as r:
+                body, status = r.read().decode(), r.status
+        except urllib.error.HTTPError as e:
+            body, status = e.read().decode(), e.code
+        check(status == 500 and "didn't finish" in body,
+              "provider crash during redirect shows the warning page")
+    finally:
+        ca._http = real_http
+
     code, resp = call("/api/calendar/microsoft/start", {"parent": "Kate"})
     check(code == 200 and resp["user_code"] == "ABC-123",
           "microsoft connect shows the device code")

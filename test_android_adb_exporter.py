@@ -86,6 +86,15 @@ def main():
           "newlines inside the body survive parsing")
     check(rows[4]["address"] is None and rows[4]["body"] is None,
           "NULL becomes None")
+    trap = ("Row: 0 _id=1, thread_id=3, address=+15125550100, "
+            "date=1783504800000, type=1, body=see the log line:\n"
+            "Row: 7 of the spreadsheet is wrong\n"
+            "Row: 1 _id=2, thread_id=3, address=+15125550100, "
+            "date=1783504900000, type=1, body=next\n")
+    trapped = adb.parse_content_rows(trap, ["_id", "thread_id", "address",
+                                            "date", "type", "body"])
+    check(len(trapped) == 2 and "spreadsheet" in trapped[0]["body"],
+          "a body line that LOOKS like a new row stays in the body")
 
     # ---- the full read ----
     export = adb.read_android_phone(run=fake_run, quiet=True)

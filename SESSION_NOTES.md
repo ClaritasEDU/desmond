@@ -9,6 +9,91 @@ This file contains a complete history of Claude Code sessions for this repositor
 
 ---
 
+## 2026-07-12 (part 5) — Comprehensive audit: 19 bugs found and fixed
+
+### What We Built
+Full adversarial test pass over everything from parts 3–4 (three parallel
+review agents + direct repro work; every finding reproduced before fixing,
+every fix locked in with a regression test). 19 confirmed bugs fixed,
+low → high severity. All 12 suites pass.
+
+**High severity**
+1. `--shared`-mapped couple threads (contact names that don't auto-match)
+   were excluded from federation but NOT from gap detection — the couple's
+   private messages surfaced as "gaps". Mapping now flows through.
+2. The new `address` field crashed `export_ai_ready()`'s CSV writer on any
+   non-empty Android export (regression from part 4's own fix; caught
+   because nothing had tested that path — now the audit did).
+
+**Correctness of the gap report (the product)**
+3. iPhone↔Android couples: same SMS logged seconds apart never deduped →
+   duplicated couple transcript. Dedup now windowed (120s, same sender,
+   nearest match); "ok" from each partner in the same minute stays two
+   messages.
+4. Two different people saved under one name ("Mom" on each phone) were
+   diffed as the same thread → fabricated gaps. The differ now compares
+   thread addresses (last-7-digit phone / email) and drops conflicting
+   matches; the same school shortcode still diffs.
+5. `_norm_address` initially made 555-0142 ≠ +1-512-555-0142 (suppressing
+   real gaps) — now compares on the last 7 digits.
+6. "Unknown"/unnamed threads excluded from gap detection entirely.
+7. With 3+ participants, a thread two parents share never flagged the
+   third as missing it. Now it does.
+8. `--since` (on by default in the CLI) silently dropped gaps whose
+   messages had no parseable dates. Undated gaps now stay in scope.
+9. Hidden Google calendars (the API omits `selected=false`) were fetched —
+   Holidays-style subscriptions flooding the report. Now only
+   selected/primary calendars.
+10. Google `calendarList` pagination wasn't followed (accounts with 100+
+    calendars silently lost the rest).
+
+**Crashes on real-world data**
+11–13. `None` timestamps or times anywhere in an export crashed
+    federation sorts, gap sorting, and report rendering (three distinct
+    sites). All coerced safely.
+14. Outlook-style UTF-8 BOM made ICS uploads unparseable; BOM'd JSON and
+    UTF-16 XML uploads were rejected by the sniffing. All handled.
+15. Malformed JSON uploads leaked ValueError → web 500 instead of a
+    friendly 400.
+16. adb parser: a message body containing a line that *looks* like a new
+    row ("Row: 7 of the spreadsheet…") truncated the real row.
+17. chat.db messages joined to two chats (merged SMS/iMessage threads)
+    exported twice; attachment-only rows were mistyped
+    `text_with_attachment`.
+
+**Wizard robustness/UX/security**
+18. The 4-second state poll rebuilt the source/calendar cards, wiping a
+    half-typed calendar link and collapsing panels; a provider error during
+    the Google redirect dropped the connection and printed a raw traceback
+    (token in terminal); `window.open` after an `await` gets popup-blocked
+    in Firefox/Safari. All three fixed (state-diffed redraw that also
+    yields to focused inputs; guarded redirect with friendly error page;
+    synchronous tab open).
+19. DNS-rebinding gap: GET endpoints had no Host validation (Origin only
+    covers POSTs); `detect_available` (adb subprocess + backup-dir scans)
+    ran on every poll — now Host-checked everywhere and cached 8s with an
+    explicit /api/rescan. Duplicate participant names deduped.
+
+### Current Status
+- ✅ 12/12 suites green (~50 new regression checks added across 6 suites);
+  wizard JS re-verified with node; wizard re-driven end-to-end over HTTP.
+- 🚧 Real-device pass still pending (unchanged).
+
+### Branch Info
+- Branch: `claude/desmond-parentpoint-federation-qsqif6`.
+
+### Decisions Made
+- False positives are worse than false negatives in the gap report: name
+  matches with conflicting numbers are dropped, not guessed at.
+- Phone identity = last 7 digits (survives formatting differences without
+  needing country-code normalization).
+
+### Next Steps
+Unchanged from part 4 (real devices, OAuth registrations, then ParentPoint
+wiring once its branch is resolved).
+
+---
+
 ## 2026-07-12 (part 4) — No files: the family web wizard, Android over USB, calendar sign-in
 
 ### What We Built

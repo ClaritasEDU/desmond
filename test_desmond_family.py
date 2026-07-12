@@ -286,6 +286,60 @@ def main():
     check(not g_unk["messages"] and not g_unk["threads"],
           "'Unknown' threads produce no gaps at all")
 
+    # ---- audit regressions -------------------------------------------------------
+    # explicit --shared couple mapping is excluded from gap detection too.
+    wc = export([{"name": "Wifey", "type": "direct"}],
+                [msg("2026-07-01T09:00:00", "Wifey", "Me", True, "hey"),
+                 msg("2026-07-01T09:01:00", "Wifey", "Wifey", False, "hi")])
+    hk = export([{"name": "Hubs", "type": "direct"}],
+                [msg("2026-07-01T09:00:00", "Hubs", "Hubs", False, "hey"),
+                 msg("2026-07-01T09:01:00", "Hubs", "Me", True, "hi")])
+    r_sh = fam.federate_family_data(
+        message_exports=[("Chris", wc), ("Kate", hk)], consented=True,
+        explicit_shared=[("Wifey", "Hubs")])
+    g_sh = r_sh["family"]["gaps"]
+    check(not g_sh["threads"] and not g_sh["messages"],
+          "explicitly-mapped couple thread never appears as a gap")
+
+    # Short and full forms of the same number are the same person.
+    check(fam._norm_address("555-0142") == fam._norm_address("+1 512 555 0142"),
+          "7-digit and full number forms normalize identically")
+
+    # None timestamps/times survive federation, filtering, and rendering.
+    nc = export([{"name": "Kate", "type": "direct"},
+                 {"name": "Dentist", "type": "direct"}],
+                [dict(msg("2026-07-08T10:00:00", "Dentist", "Dentist", False,
+                          "Reminder"), timestamp=None, time=None)])
+    nk = export([{"name": "Chris", "type": "direct"},
+                 {"name": "Dentist", "type": "direct"}],
+                [msg("2026-07-09T10:00:00", "Dentist", "Dentist", False,
+                     "Other reminder")])
+    r_none = fam.federate_family_data(
+        message_exports=[("Chris", nc), ("Kate", nk)], consented=True,
+        since="2026-06-12")
+    check(r_none["gaps_md"].startswith("# Family")
+          and len(r_none["family"]["gaps"]["messages"]) == 2,
+          "None timestamps survive end to end and aren't dropped by --since")
+
+    # Three participants: a thread two parents share still flags the third.
+    def solo_exp(conv, addr):
+        m = msg("2026-07-08T10:00:00", conv, conv, False, "Early dismissal")
+        m["address"] = addr
+        return export([{"name": conv, "type": "direct"}], [m])
+    r_three = fam.federate_family_data(
+        message_exports=[("Chris", solo_exp("School", "22300")),
+                         ("Kate", solo_exp("School", "22300")),
+                         ("Pat", export([], []))],
+        consented=True)
+    t_three = [(g["conversation"], g["missing_for"])
+               for g in r_three["family"]["gaps"]["threads"]]
+    check(("School", ["Pat"]) in t_three,
+          f"a thread two of three parents share flags the third (got {t_three})")
+
+    # Outlook-style BOM'd ICS parses.
+    check(len(fam.parse_calendar(b"\xef\xbb\xbf" + chris_ics.encode())) == 2,
+          "ICS with a UTF-8 BOM parses")
+
     # ---- rendering ---------------------------------------------------------------
     md = res["gaps_md"]
     check(md.startswith("# Family Coverage Gaps"), "gaps report renders")

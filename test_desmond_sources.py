@@ -121,6 +121,32 @@ def main():
         check(export3["total_messages"] == 3,
               "pre-attributedBody databases read via fallback query")
 
+        # A message joined to TWO chats (merged SMS/iMessage rows) exports once.
+        conn = sqlite3.connect(db)
+        conn.execute("INSERT INTO chat VALUES (20, 'chat0002', 'Dup Group')")
+        conn.execute("INSERT INTO chat_handle_join VALUES (20, 1)")
+        conn.execute("INSERT INTO chat_handle_join VALUES (20, 2)")
+        conn.execute("INSERT INTO chat_message_join VALUES (20, 1)")
+        conn.commit(); conn.close()
+        export_dup = src.read_imessage_db(db, lookup=names.get)
+        check(export_dup["total_messages"] == 3,
+              "double chat membership doesn't duplicate the message "
+              f"(got {export_dup['total_messages']})")
+
+        # Attachment-only messages use the standard 'attachment' type.
+        conn = sqlite3.connect(db)
+        conn.execute("INSERT INTO message (ROWID, text, date, is_from_me, "
+                     "handle_id, associated_message_type, "
+                     "cache_has_attachments) VALUES (9, NULL, ?, 0, 1, 0, 1)",
+                     (apple_ns(1783504800 + 300),))
+        conn.execute("INSERT INTO chat_message_join VALUES (10, 9)")
+        conn.commit(); conn.close()
+        export_att = src.read_imessage_db(db, lookup=names.get)
+        att = next(m for m in export_att["messages"]
+                   if m["text"] == "[attachment]")
+        check(att["message_type"] == "attachment",
+              "attachment-only rows typed 'attachment' like the exporters")
+
         # ---- Mac path errors are human -----------------------------------
         try:
             src.read_mac_messages(db_path=os.path.join(tmp, "nope.db"))
@@ -175,6 +201,16 @@ def main():
             check(False, "garbage upload rejected")
         except src.SourceError:
             check(True, "garbage upload rejected")
+        up3 = src.parse_upload(b"\xef\xbb\xbf" + ANDROID_XML, "bom.xml")
+        check(up3["total_messages"] == 2, "BOM'd XML upload parsed")
+        up4 = src.parse_upload(ANDROID_XML.decode().encode("utf-16"),
+                               "utf16.xml")
+        check(up4["total_messages"] == 2, "UTF-16 XML upload parsed")
+        try:
+            src.parse_upload(b'{"not json', "messages.json")
+            check(False, "bad JSON upload raises SourceError (friendly 400)")
+        except src.SourceError:
+            check(True, "bad JSON upload raises SourceError (friendly 400)")
 
         # ---- detect_available never crashes -------------------------------
         avail = src.detect_available()

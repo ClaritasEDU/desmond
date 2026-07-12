@@ -290,8 +290,8 @@ def federate_data(exports, consented=False, explicit_shared=None,
                         continue
                     cts = cand.get("_epoch")
                     if ts is None or cts is None:
-                        delta = (0 if msg.get("timestamp", "")[:19]
-                                 == cand.get("timestamp", "")[:19] else None)
+                        delta = (0 if (msg.get("timestamp") or "")[:19]
+                                 == (cand.get("timestamp") or "")[:19] else None)
                     else:
                         delta = abs(cts - ts)
                     if (delta is not None and delta <= DEDUP_WINDOW_SECONDS
@@ -309,7 +309,7 @@ def federate_data(exports, consented=False, explicit_shared=None,
                 rec["shared"] = False
             merged.append(rec)
 
-    merged.sort(key=lambda m: m.get("timestamp", ""))
+    merged.sort(key=lambda m: m.get("timestamp") or "")
     for m in merged:
         m.pop("_epoch", None)
 
@@ -323,11 +323,11 @@ def federate_data(exports, consented=False, explicit_shared=None,
             "shared": m.get("shared", False),
             "owners": [],
             "message_count": 0,
-            "first_message": m.get("timestamp"),
-            "last_message": m.get("timestamp"),
+            "first_message": m.get("timestamp") or "",
+            "last_message": m.get("timestamp") or "",
         })
         meta["message_count"] += 1
-        meta["last_message"] = m.get("timestamp")
+        meta["last_message"] = m.get("timestamp") or ""
         if m["owner"] not in meta["owners"]:
             meta["owners"].append(m["owner"])
 

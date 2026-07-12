@@ -135,7 +135,12 @@ deliberately untouched). Text messages remain the default use case.
 - Calendar sign-in needs the one-time app registrations (free, ~10 min).
 
 ## Last Session
-- **Date:** 2026-07-12 (parts 3–4)
+- **Date:** 2026-07-12 (parts 3–5; part 5 = comprehensive audit — 19
+  confirmed bugs fixed with regression tests, incl. cross-platform couple
+  dedup, same-name/different-person false gaps, `--shared` couple threads
+  leaking into gaps, None-timestamp crashes, BOM/UTF-16 uploads, hidden
+  Google calendars, calendarList pagination, DNS-rebinding Host checks,
+  and the wizard's input-wiping redraw. See SESSION_NOTES part 5.)
 - **Branch:** `claude/desmond-parentpoint-federation-qsqif6`
 - **Summary:** Part 3 — `desmond_family.py`: federate two parents'
   messages + calendars and diff them into a coverage-gap report

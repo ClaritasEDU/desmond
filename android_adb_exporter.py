@@ -169,8 +169,13 @@ def parse_content_rows(output, projection):
     """
     rows = []
     current = None
+    # A new row must name the FIRST projected column right after "Row: N" —
+    # otherwise a message body containing a line like "Row: 7 of the
+    # spreadsheet is wrong" would be mistaken for a new row and truncate
+    # the real one.
+    row_start = re.compile(r"^Row: \d+ " + re.escape(projection[0]) + r"=")
     for line in output.splitlines():
-        if re.match(r"^Row: \d+ ", line):
+        if row_start.match(line):
             if current is not None:
                 rows.append(current)
             current = line

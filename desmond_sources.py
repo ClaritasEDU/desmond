@@ -146,6 +146,7 @@ def read_imessage_db(db_path, lookup=None, source_label="iMessage"):
 
     messages = []
     conversations = {}
+    seen_rowids = set()   # merged SMS/iMessage chats join a message twice
     for row in rows:
         if has_body:
             (_rowid, text, attributed, date, is_from_me, handle_id,
@@ -155,6 +156,9 @@ def read_imessage_db(db_path, lookup=None, source_label="iMessage"):
             (_rowid, text, date, is_from_me, handle_id, assoc_type,
              has_att, chat_identifier, display_name, chat_rowid) = row
 
+        if _rowid in seen_rowids:
+            continue
+        seen_rowids.add(_rowid)
         if assoc_type and assoc_type >= 2000:
             continue                       # tapback/reaction — see docstring
         if not text and has_body and attributed:
@@ -185,6 +189,12 @@ def read_imessage_db(db_path, lookup=None, source_label="iMessage"):
             sender = name_for(identifier_for(handle_id)) if handle_id else conversation
             sender = sender or conversation
 
+        if has_att and text:
+            message_type = "text_with_attachment"
+        elif has_att:
+            message_type = "attachment"
+        else:
+            message_type = "text"
         text = text or "[attachment]"
         messages.append({
             "timestamp": when.isoformat(),
@@ -195,7 +205,7 @@ def read_imessage_db(db_path, lookup=None, source_label="iMessage"):
             "address": address,
             "sender": sender,
             "is_from_me": bool(is_from_me),
-            "message_type": "text" if not has_att else "text_with_attachment",
+            "message_type": message_type,
             "text": text,
             "has_attachment": bool(has_att),
             "attachment_types": [],
@@ -332,10 +342,22 @@ def parse_upload(data, filename="upload"):
     storage). Returns a standard export dict."""
     if isinstance(data, str):
         data = data.encode("utf-8")
+    # BOMs and UTF-16 are common in the wild (Outlook/Windows tools): strip
+    # a UTF-8 BOM, and transcode UTF-16 so sniffing sees real bytes.
+    if data[:3] == b"\xef\xbb\xbf":
+        data = data[3:]
+    elif data[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        try:
+            data = data.decode("utf-16").encode("utf-8")
+        except UnicodeDecodeError:
+            pass
     head = data[:4096].lstrip()
     if head.startswith(b"{"):
         from desmond_federate import parse_export
-        return parse_export(data, source=filename)
+        try:
+            return parse_export(data, source=filename)
+        except ValueError as e:
+            raise SourceError(str(e))
     if head.startswith(b"<"):
         import android_sms_exporter as axe
         messages, _calls = axe.parse_backup_bytes(data)

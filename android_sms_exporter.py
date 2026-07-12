@@ -569,10 +569,11 @@ def export_ai_ready(messages):
 
     if all_messages:
         fieldnames = ["timestamp", "date", "time", "year", "month", "day", "hour",
-                      "day_of_week", "conversation", "conversation_type", "sender",
-                      "is_from_me", "message_type", "text", "has_attachment",
-                      "attachment_types", "reaction", "special_content", "effect",
-                      "char_count", "word_count", "source"]
+                      "day_of_week", "conversation", "conversation_type", "address",
+                      "sender", "is_from_me", "message_type", "text",
+                      "has_attachment", "attachment_types", "reaction",
+                      "special_content", "effect", "char_count", "word_count",
+                      "source"]
 
         import csv
         with open(csv_path, 'w', newline='', encoding='utf-8') as f:

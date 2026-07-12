@@ -299,12 +299,24 @@ def fetch_google_events(access_token, days_back=FETCH_DAYS_BACK,
     time_max = _rfc3339(now + days_forward * 86400)
     headers = {"Authorization": f"Bearer {access_token}"}
 
-    cal_list = http(f"{GOOGLE_API}/users/me/calendarList", headers=headers)
-    if "items" not in cal_list:
-        raise AuthError("Google Calendar refused the request — reconnect "
-                        "the account. (" + str(cal_list.get("error", "")) + ")")
+    calendars = []
+    page = None
+    while True:                      # calendarList paginates past ~100 cals
+        params = {"maxResults": "250"}
+        if page:
+            params["pageToken"] = page
+        cal_list = http(f"{GOOGLE_API}/users/me/calendarList?"
+                        + urllib.parse.urlencode(params), headers=headers)
+        if "items" not in cal_list:
+            raise AuthError("Google Calendar refused the request — reconnect "
+                            "the account. ("
+                            + str(cal_list.get("error", "")) + ")")
+        calendars.extend(cal_list.get("items", []))
+        page = cal_list.get("nextPageToken")
+        if not page:
+            break
     events = []
-    for cal in cal_list.get("items", []):
+    for cal in calendars:
         # Only calendars the account actually displays (plus the primary):
         # the API omits selected=false, so an absent flag means hidden —
         # pulling those drags in Holidays-style calendars only one parent

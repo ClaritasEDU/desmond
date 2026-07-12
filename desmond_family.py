@@ -166,9 +166,10 @@ def parse_calendar(data, source="upload"):
          "description", "calendar", "status", "repeats"}
     """
     if isinstance(data, (bytes, bytearray)):
-        data = data.decode("utf-8", "replace")
+        # utf-8-sig: Outlook-exported ICS files often start with a BOM
+        data = bytes(data).decode("utf-8-sig", "replace")
     if isinstance(data, str):
-        stripped = data.lstrip()
+        stripped = data.lstrip("﻿ \t\r\n")
         if stripped[:15].upper().startswith("BEGIN:VCALENDAR"):
             return _normalize_events(parse_ics(data, source), source)
         try:
@@ -241,7 +242,7 @@ def load_calendar_source(spec, verbose=True):
                                                    verbose=verbose))
         events.sort(key=lambda e: e["start"])
         return events
-    with open(path, encoding="utf-8", errors="replace") as f:
+    with open(path, encoding="utf-8-sig", errors="replace") as f:
         events = parse_calendar(f.read(), os.path.basename(path))
     if verbose:
         print(f"   📅 {os.path.basename(path)}: {len(events)} events")
@@ -341,18 +342,21 @@ def _epoch(ts):
 
 
 def _norm_address(value):
-    """A phone number/email in comparable form (last 10 digits / lowercase
-    email), or None when there's nothing identifying."""
+    """A phone number/email in comparable form, or None when there's
+    nothing identifying. Phones compare on the LAST 7 DIGITS so the same
+    number saved as '555-0142' on one phone and '+1 512 555 0142' on the
+    other still matches."""
     s = str(value or "").strip().lower()
     if not s:
         return None
     if "@" in s:
         return s
     digits = re.sub(r"\D", "", s)
-    return digits[-10:] if len(digits) >= 7 else None
+    return digits[-7:] if len(digits) >= 7 else None
 
 
-def detect_message_gaps(message_exports, explicit_same=None):
+def detect_message_gaps(message_exports, explicit_same=None,
+                        explicit_shared=None):
     """Diff each parent's incoming messages against the other's.
 
     message_exports: list of (parent_name, export_dict) — the same input
@@ -362,6 +366,10 @@ def detect_message_gaps(message_exports, explicit_same=None):
     explicit_same: optional list of (conv_in_first, conv_in_second) pairs
     naming threads that are the same counterpart under different contact
     names (like --shared in desmond_federate).
+
+    explicit_shared: the couple's own thread named explicitly (the same
+    pairs passed to federation's --shared) — those threads are excluded
+    from gap detection exactly like auto-detected ones.
 
     Returns (message_gaps, thread_gaps):
 
@@ -377,11 +385,13 @@ def detect_message_gaps(message_exports, explicit_same=None):
     MESSAGE_MATCH_WINDOW_SECONDS counts as received on both phones (two
     carriers rarely stamp the same SMS at the same second).
     """
-    names = [name for name, _ in message_exports]
+    names = list(dict.fromkeys(name for name, _ in message_exports))
 
-    # The couple's mutual thread(s) are not "gaps" — exclude them.
+    # The couple's mutual thread(s) are not "gaps" — exclude them,
+    # whether auto-detected or named explicitly via --shared.
     couple = set()
-    for t in detect_shared_threads(message_exports):
+    for t in detect_shared_threads(message_exports,
+                                   explicit=explicit_shared):
         name_a, name_b = t["pair"]
         couple.add((name_a, _norm_name(t["conv_a"])))
         couple.add((name_b, _norm_name(t["conv_b"])))
@@ -427,10 +437,13 @@ def detect_message_gaps(message_exports, explicit_same=None):
             lack = [o for o in others if key not in threads[o]]
             if not rec["incoming"]:
                 continue    # nobody ever texted in; nothing was missed
-            if lack and key not in seen_thread_keys and not have:
-                # Whole thread exists for this parent only.
+            if lack and key not in seen_thread_keys:
+                # Some parent doesn't have this thread at all — a thread
+                # gap for them, even when other parents DO share it
+                # (matters with 3+ participants).
                 seen_thread_keys.add(key)
-                stamps = sorted(m.get("timestamp", "") for m in rec["incoming"])
+                stamps = sorted((m.get("timestamp") or "")
+                                for m in rec["incoming"])
                 thread_gaps.append({
                     "conversation": rec["name"],
                     "owner": owner,
@@ -440,6 +453,7 @@ def detect_message_gaps(message_exports, explicit_same=None):
                     "first_message": stamps[0],
                     "last_message": stamps[-1],
                 })
+            if not have:
                 continue
             # Same NAME is not the same PERSON: when both sides know the
             # counterpart's number/email and they don't overlap, it's two
@@ -465,10 +479,10 @@ def detect_message_gaps(message_exports, explicit_same=None):
                         "conversation": rec["name"],
                         "owner": owner,
                         "missing_for": missing,
-                        "timestamp": msg.get("timestamp", ""),
-                        "date": msg.get("date", ""),
-                        "time": msg.get("time", ""),
-                        "sender": msg.get("sender", ""),
+                        "timestamp": msg.get("timestamp") or "",
+                        "date": msg.get("date") or "",
+                        "time": msg.get("time") or "",
+                        "sender": msg.get("sender") or "",
                         "text": text,
                     })
 
@@ -496,7 +510,10 @@ def _received(incoming, text, ts):
 
 def _gap_matches(gap, since, keywords):
     when = gap.get("start") or gap.get("timestamp") or gap.get("last_message") or ""
-    if since and when[:10] < since[:10]:
+    # A gap with no usable date stays IN scope — dropping it silently would
+    # hide real findings whenever `since` is set (which the CLI does by
+    # default).
+    if since and when and when[:10] < since[:10]:
         return False
     if keywords:
         hay = " ".join(str(gap.get(k, "")) for k in
@@ -575,7 +592,8 @@ def federate_family_data(message_exports=None, calendar_exports=None,
         messages_payload = fed["federated"]
         shared_transcripts = fed["shared_transcripts"]
         message_gaps, thread_gaps = detect_message_gaps(
-            message_exports, explicit_same=explicit_same)
+            message_exports, explicit_same=explicit_same,
+            explicit_shared=explicit_shared)
 
     # Calendars: federate + gaps are the events with missing_for.
     calendar_events = []

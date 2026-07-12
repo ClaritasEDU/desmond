@@ -94,19 +94,21 @@ def main():
     check(t2["access_token"] == "AT2" and t2["refresh_token"] == "RT1",
           "google_refresh reuses the cached refresh token")
 
-    # ---- Google: event fetch + normalization ----
+    # ---- Google: event fetch + normalization (calendarList paginated) ----
     def http_gcal(url, data=None, headers=None, method=None):
         check(headers.get("Authorization") == "Bearer AT2",
               "calendar request sends the bearer token") \
             if "calendarList" in url else None
-        if "calendarList" in url:
+        if "calendarList" in url and "pageToken=NEXT" in url:
             return {"items": [{"id": "primary", "summary": "Family",
-                               "primary": True},
-                              {"id": "work", "summary": "Work",
+                               "primary": True}]}
+        if "calendarList" in url:
+            return {"items": [{"id": "work", "summary": "Work",
                                "selected": False},
                               # hidden subscription: `selected` omitted by the
                               # API -> must be skipped, or Holidays floods gaps
-                              {"id": "holidays", "summary": "Holidays"}]}
+                              {"id": "holidays", "summary": "Holidays"}],
+                    "nextPageToken": "NEXT"}
         if "/calendars/primary/events" in url:
             return {"items": [
                 {"summary": "Emma dentist",
@@ -121,8 +123,8 @@ def main():
         raise AssertionError(f"unexpected call {url}")
 
     events = ca.fetch_google_events("AT2", http=http_gcal, now=1783504800)
-    check(len(events) == 2, f"2 events fetched; deselected + hidden "
-          f"(selected-omitted) calendars and broken event skipped "
+    check(len(events) == 2, f"2 events fetched from the SECOND calendarList "
+          f"page; deselected + hidden calendars and broken event skipped "
           f"(got {len(events)})")
     dentist = next(e for e in events if e["title"] == "Emma dentist")
     check(dentist["start"].startswith("2026-07-20T14:00")

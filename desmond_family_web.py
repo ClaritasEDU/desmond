@@ -417,6 +417,20 @@ class Handler(BaseHTTPRequestHandler):
         if not self._host_ok():
             return self._json({"ok": False, "error": "Bad host."}, 403)
         url = urllib.parse.urlsplit(self.path)
+        try:
+            return self._route_get(url)
+        except Exception as e:               # never a dropped connection
+            if LOG:
+                LOG.exception("unhandled GET")
+            if url.path == "/oauth/google":
+                return self._html(OAUTH_PAGE.format(
+                    icon="⚠️", title="Sign-in didn't finish",
+                    detail="Something unexpected went wrong — go back to "
+                           "the Desmond tab and click Connect again."), 500)
+            return self._json({"ok": False,
+                               "error": f"Unexpected problem: {e}"}, 500)
+
+    def _route_get(self, url):
         if url.path == "/":
             return self._html(PAGE)
         if url.path == "/api/state":
@@ -754,6 +768,7 @@ function calParentHtml(name){
 }
 
 /* ---------- draw ---------- */
+let lastDrawn="";
 function draw(){
   const started=S.parents.length===2;
   $("b-consent").className="badge "+(started?"done":"todo");
@@ -773,9 +788,21 @@ function draw(){
   $("b-messages").textContent=mDone===2?"done":(mDone+"/2");
   $("b-calendars").className="badge "+(cDone===2?"done":"todo");
   $("b-calendars").textContent=cDone===2?"done":(cDone+"/2");
-  $("msg-parents").innerHTML=S.parents.map(msgParentHtml).join("");
-  $("cal-parents").innerHTML=S.parents.map(calParentHtml).join("");
-  wire();
+  // The poll fires every few seconds; rebuilding these cards while nothing
+  // changed (or while the parent is typing in one of their inputs) would
+  // wipe half-entered text and collapse open panels.
+  const snapshot=JSON.stringify([S.parents,S.messages,S.calendars,
+    S.available,S.providers,S.saved_accounts,S.pending_ms]);
+  const typing=["msg-parents","cal-parents"].some(id=>{
+    const el=$(id);
+    return el&&el.contains(document.activeElement)
+      &&/^(INPUT|BUTTON)$/.test(document.activeElement.tagName);});
+  if(snapshot!==lastDrawn&&!typing){
+    $("msg-parents").innerHTML=S.parents.map(msgParentHtml).join("");
+    $("cal-parents").innerHTML=S.parents.map(calParentHtml).join("");
+    wire();
+    lastDrawn=snapshot;
+  }
 }
 
 function wire(){
@@ -796,9 +823,13 @@ function wire(){
       kind:"calendars"},"err-calendars"));
   document.querySelectorAll("[data-google]").forEach(b=>b.onclick=async()=>{
     $("err-calendars").textContent="";
+    // Open the tab synchronously inside the click gesture — window.open
+    // after an await gets popup-blocked in Firefox/Safari.
+    const wnd=window.open("","_blank");
     try{const r=await api("/api/calendar/google/start",
-      {parent:b.dataset.google});window.open(r.url,"_blank");}
-    catch(e){$("err-calendars").textContent=e.message;}});
+      {parent:b.dataset.google});
+      if(wnd) wnd.location=r.url; else window.location=r.url;}
+    catch(e){if(wnd) wnd.close();$("err-calendars").textContent=e.message;}});
   document.querySelectorAll("[data-ms]").forEach(b=>b.onclick=async()=>{
     $("err-calendars").textContent="";
     try{await api("/api/calendar/microsoft/start",{parent:b.dataset.ms});
