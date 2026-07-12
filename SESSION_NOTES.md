@@ -1,11 +1,91 @@
 # DESMOND - Session History
 
 **Repository:** `desmond`  
-**Total Sessions Logged:** 5  
-**Date Range:** 2025-01-25 to 2026-06-13  
-**Last Updated:** 2026-06-13 at 02:58 UTC
+**Total Sessions Logged:** 8  
+**Date Range:** 2025-01-25 to 2026-07-12  
+**Last Updated:** 2026-07-12
 
 This file contains a complete history of Claude Code sessions for this repository, automatically generated from transcript files. Sessions are listed in reverse chronological order (most recent first).
+
+---
+
+## 2026-07-12 (part 3) — Family federation: the ParentPoint coverage-gap engine
+
+### What We Built
+1. **`desmond_family.py` (NEW)** — federates two parents' **messages AND
+   calendars**, then diffs the two views to surface the coverage gaps
+   ParentPoint exists to fix: the dentist text only Mom got, the school
+   event only on Dad's calendar. Three gap types come out of the diff:
+   - 📅 **calendar** — events on only one parent's calendar (`missing_for`)
+   - 💬 **messages** — incoming texts only one parent received, in threads
+     both parents have
+   - 📥 **threads** — counterparts (dentist, coach, school office) that only
+     ever text one parent
+   One dummy-proof command:
+   `python3 desmond_family.py "Chris=EXPORT" "Kate=EXPORT" --calendar
+   "Chris=SECRET_ICAL_URL" --calendar "Kate=…"` → writes
+   `~/Downloads/Desmond_Family_Archive/` with **FAMILY_GAPS.md** (the
+   deliverable), `family.json` (format `desmond-family/1`),
+   `FAMILY_SUMMARY.md`, and the couple's merged thread under `shared/`.
+2. **Pure in-memory API for ParentPoint** (surfacing comes in a later
+   session, in parentpoint): `federate_family_data(message_exports=…,
+   calendar_exports=…, consented=True, consent_records=[…], since=…,
+   keywords=…)` — no filesystem, no printing; returns the JSON-serializable
+   payload plus `gaps_md`/`summary_md` as strings. `parse_calendar()`
+   accepts raw ICS text/bytes (what fetching a feed returns), JSON, or
+   event lists — whatever transport the app used.
+3. **Noise controls so the report is worry-free:** identical incoming texts
+   within 5 min count as received on both phones (carrier lag); events with
+   the same title on the same day match even when the minute differs
+   (`loose_match: true`); default reporting window = last 30 days +
+   everything upcoming (`--since` / `--all`); `--keyword dentist` narrows;
+   `--same-thread "Dan (Soccer)=+1512…"` maps differently-saved contacts.
+
+### Technical Details
+- Reuses, doesn't reinvent: message merging delegates to
+  `desmond_federate.federate_data()` (couple thread excluded from gaps);
+  ICS parsing/fetching/URL-normalizing imported from `desmond_consolidate`.
+  Stdlib only, consent enforced at the library level (same `ConsentError`).
+- Calendar identity = (start to the minute — to the day for all-day —
+  + normalized title), with a second same-day/same-title loose pass.
+- **iPhone-first, Android notes written down** (module docstring + README
+  table): Android SMS exports federate today via
+  `android_sms_exporter.py`, but RCS chats are NOT in SMS Backup & Restore
+  XML (future exporter needed); calendar links are phone-agnostic; Android's
+  `NotificationListenerService` could later capture school-app notifications
+  (iOS has no such API — that's why iPhone = texts + calendar), emitted in
+  the standard export shape so this module needs zero changes.
+- New `test_desmond_family.py` (32 checks — gap detection, loose
+  matching, lag tolerance, consent, filters, renders, disk wrapper); every
+  test suite in the repo passes; CLI exercised end-to-end in-container with
+  synthetic exports + .ics files.
+
+### Current Status
+- ✅ All test suites green; family CLI verified end-to-end in-container.
+- 🚧 Not yet run with real exports/feeds (needs Chris's machine + a second
+  participant's export).
+
+### Branch Info
+- Branch: `claude/desmond-parentpoint-federation-qsqif6` (this session).
+
+### Decisions Made
+- Gaps live in desmond as a generic "two people's data" diff — ParentPoint
+  later calls `federate_family_data()` and does the parent-facing surfacing.
+- Kid-related filtering is a plain `keywords` parameter for now; smarter
+  classification belongs in ParentPoint, not here.
+- iOS notification capture is impossible (no API), so iPhone v1 = SMS +
+  calendar feeds; Android notification capture noted as the future
+  differentiator.
+
+### Next Steps
+1. Real-world run: two actual exports + two real secret iCal links →
+   sanity-check FAMILY_GAPS.md noise level; tune window/matching if needed.
+2. ParentPoint side (separate session, parentpoint repo): feed
+   `federate_family_data()` output into the app's notification surface.
+3. Android follow-ups when wanted: RCS story + notification exporter.
+
+### Questions/Blockers
+- None for the library; real-data noise tuning needs Chris's machine.
 
 ---
 

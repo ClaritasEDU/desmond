@@ -4,9 +4,12 @@
 
 A cross-platform toolkit that exports your text message history to AI-ready formats. Works with iMessage on Mac, iPhone backups on Windows, and Android SMS backups.
 
-Text messages are the headline act. Two optional extras build on it:
+Text messages are the headline act. Three optional extras build on it:
 **[Federation](#federation-two-people-one-shared-archive)** merges two people's
-exports (say, a husband and wife) into one shared archive, and
+exports (say, a husband and wife) into one shared archive,
+**[Family federation](#family-federation-find-the-coverage-gaps-messages--calendars)**
+diffs two parents' messages **and calendars** to surface what only one of them
+knows (the missed dentist text, the invite on one calendar), and
 **[Consolidate mode](#optional-consolidate-mode-one-md-of-your-personal-data)**
 builds a single Markdown file from your messages, calendar (Google / Outlook /
 Apple), contacts, and call logs.
@@ -515,6 +518,78 @@ result["shared_transcripts"]   # {thread title: transcript markdown}
 An online app should set `consented=True` only after **each** participant has
 affirmatively opted in. For local use, `federate()` wraps this and writes the
 files (that's what the CLI does).
+
+---
+
+## Family federation: find the coverage gaps (messages + calendars)
+
+Family coordination breaks in one specific way: the dentist texts one parent
+about the kid's appointment and the other parent never hears about it; the
+school event lands on one calendar but not the other. `desmond_family.py`
+federates **both parents' messages AND calendars** and then does what no
+single-person export can — it **diffs the two views** and reports the blind
+spots:
+
+- 📅 **calendar events only on one parent's calendar**
+- 💬 **texts only one parent received** (in threads you both have)
+- 📥 **whole threads that only ever talk to one of you** (the dentist, the
+  coach, the school office)
+
+```bash
+cd ~/desmond
+python3 desmond_family.py \
+    "Chris=~/Downloads/iMessages_Export" \
+    "Kate=/path/to/kates_export" \
+    --calendar "Chris=https://calendar.google.com/calendar/ical/…/basic.ics" \
+    --calendar "Kate=webcal://outlook.office365.com/owa/calendar/…/calendar.ics"
+```
+
+- **Messages** come from each parent's finished Desmond export (run
+  `desmond_export.py` or an exporter first). Either half is optional —
+  calendars only, messages only, or both.
+- **Calendars** come straight from each parent's private iCal link (Google
+  Calendar "Secret address", Outlook/365 published ICS, iCloud published
+  `webcal://`) — same links consolidate mode uses — or exported `.ics` files.
+- **Consent first**, same contract as federation: the tool confirms both
+  people agreed before combining anything (`--consented` for scripts).
+- **Low-noise by design:** identical texts within 5 minutes count as
+  "both got it" (carriers lag); same-day/same-title events match even when
+  the two calendars disagree on the minute; the default window is the last
+  30 days + everything upcoming (`--since YYYY-MM-DD` or `--all` to widen,
+  `--keyword dentist` to narrow). `--same-thread "Dan (Soccer)=+1512555…"`
+  tells the differ two differently-saved contacts are the same person.
+
+**What you get:** `Desmond_Family_Archive/` with **`FAMILY_GAPS.md`** (the
+point — what only one of you has), `family.json`
+(format `desmond-family/1`), `FAMILY_SUMMARY.md`, and the couple's merged
+thread under `shared/`.
+
+**For apps (this is the ParentPoint hook):** the whole federation + diff is
+a pure in-memory function — no filesystem, no printing:
+
+```python
+from desmond_family import parse_calendar, federate_family_data
+from desmond_federate import parse_export
+
+result = federate_family_data(
+    message_exports=[("Chris", parse_export(chris_upload)),
+                     ("Kate",  parse_export(kate_upload))],
+    calendar_exports=[("Chris", parse_calendar(chris_ics_text)),
+                      ("Kate",  parse_calendar(kate_ics_text))],
+    consented=True, consent_records=[…], since="2026-06-01")
+
+result["family"]["gaps"]   # structured gap lists: calendar/messages/threads
+result["gaps_md"]          # FAMILY_GAPS.md as a string, ready to render
+```
+
+**iPhone today / Android tomorrow:**
+
+| Signal | iPhone (built now) | Android (future notes) |
+|--------|--------------------|------------------------|
+| Texts | iMessage/SMS exporters (Mac live, Windows from backup) — appointment reminders almost always arrive as SMS | `android_sms_exporter.py` output federates today; **RCS chats are NOT in SMS Backup & Restore XML** — needs a future exporter |
+| Calendar | Private iCal links (Google/Outlook/iCloud) — phone-agnostic, fresh every run | Identical — nothing new needed |
+| App notifications | **Not possible** — iOS has no API to read other apps' notifications; texts + calendar are the federable signals | `NotificationListenerService` can capture school/pharmacy/team app notifications with user permission — a future `android_notification_exporter.py` emitting the standard export shape would federate with zero changes here |
+| Calls | — | `calls.xml` already exported; a "missed the school's call" gap could reuse the same differ |
 
 ---
 
