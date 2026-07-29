@@ -4,21 +4,27 @@
 > **Category:** Infrastructure
 > **Local Path:** `~/desmond/`
 
-## Overall Progress: ~95%
+## Overall Progress: ~96%
 
 v1 shipped (cross-platform message **text** exporters) plus attachment
-archiving with three-way verify, federation, and optional consolidate mode.
-This session (2026-07-12 parts 3–4): **family federation**
-(`desmond_family.py`) — federate two parents' messages AND calendars and
-report the **coverage gaps** — and the **no-files web wizard**
-(`desmond_family_web.py`): plug each phone into the computer (iPhone
-backup read in place; Android read live over USB), connect calendars with
-Google/Microsoft **sign-in**, gaps render in the browser, nothing touches
-disk unless Save is clicked. Mixed iPhone+Android households supported.
-This is the engine ParentPoint will surface later (parentpoint repo
-deliberately untouched). Text messages remain the default use case.
+archiving with three-way verify, federation, consolidate mode, family
+federation, and the no-files web wizard. This session (2026-07-29): a
+**one-command bridge to PersonalCRM** (`desmond_crm_export.py`) — read texts
+from any source and write a `personalcrm_import.json` the companion CRM app
+imports, so mined messages (with the cell numbers already attached) become
+real, analyzable conversations there. Additive and self-contained; the
+ParentPoint/federation work is untouched. Text messages remain the default
+use case.
 
 ## What's Working
+- **⭐ PersonalCRM bridge (NEW)** (`desmond_crm_export.py`) — one command reads
+  your texts from any source (this Mac's Messages, a plugged-in iPhone's local
+  backup, a plugged-in Android over USB, or an existing export) and writes a
+  single `personalcrm_import.json`. Then in PersonalCRM: Settings → Text Message
+  Import → upload. Cell numbers/emails ride along in each message's `address`,
+  so the CRM assigns numbers to people automatically. Reuses `desmond_sources` +
+  `desmond_federate.parse_export`; device readers imported lazily; pure
+  `build_crm_export()` is fully unit-tested. Stdlib only; nothing uploaded.
 - **⭐ One-shot full exporter** (`desmond_export.py`) — whole history into one
   browsable archive (inline media, pagination, local + Google Drive,
   three-way verified, PII-safe run logs). Still the headline path.
@@ -103,7 +109,7 @@ deliberately untouched). Text messages remain the default use case.
   issues — see SESSION_NOTES 2026-07-12 for the full list.)
 
 ## What's In Progress / Needs Real-Mac Verification
-- All fix and feature work is validated by synthetic tests (12 test
+- All fix and feature work is validated by synthetic tests (13 test
   scripts, all passing; wizard driven end-to-end over real HTTP with
   stubbed phones/providers) but **not yet run against real devices** —
   a real Mac, a real iPhone backup, a real Android over adb, and real
@@ -117,17 +123,21 @@ deliberately untouched). Text messages remain the default use case.
   No external dependencies.
 
 ## Next Steps
-1. One-time calendar app registrations (Google Cloud Console + Azure —
+1. **PersonalCRM bridge real run:** `cd ~/desmond && python3 desmond_crm_export.py`
+   on Chris's Mac/phone, then import the `personalcrm_import.json` into
+   PersonalCRM and sanity-check that contacts, cell numbers, and threads land
+   correctly.
+2. One-time calendar app registrations (Google Cloud Console + Azure —
    click-by-click steps at the top of `desmond_calendar_auth.py`), put the
    IDs in `~/.desmond/oauth_clients.json`, then run the wizard for real:
    `cd ~/desmond && python3 desmond_family_web.py`.
-2. Real-device pass on Chris's machine: this Mac's Messages, a plugged-in
+3. Real-device pass on Chris's machine: this Mac's Messages, a plugged-in
    iPhone's backup, an Android over USB — sanity-check FAMILY_GAPS.md
    noise and tune matching if needed.
-3. When the parentpoint branch is resolved (separate session, parentpoint
+4. When the parentpoint branch is resolved (separate session, parentpoint
    repo): wire ParentPoint to desmond_sources + desmond_calendar_auth +
    `federate_family_data()`.
-4. Merge `claude/desmond-parentpoint-federation-qsqif6` to main; delete
+5. Merge `claude/desmond-parentpoint-federation-qsqif6` to main; delete
    branch.
 
 ## Blockers
@@ -135,21 +145,18 @@ deliberately untouched). Text messages remain the default use case.
 - Calendar sign-in needs the one-time app registrations (free, ~10 min).
 
 ## Last Session
-- **Date:** 2026-07-12 (parts 3–5; part 5 = comprehensive audit — 19
-  confirmed bugs fixed with regression tests, incl. cross-platform couple
-  dedup, same-name/different-person false gaps, `--shared` couple threads
-  leaking into gaps, None-timestamp crashes, BOM/UTF-16 uploads, hidden
-  Google calendars, calendarList pagination, DNS-rebinding Host checks,
-  and the wizard's input-wiping redraw. See SESSION_NOTES part 5.)
-- **Branch:** `claude/desmond-parentpoint-federation-qsqif6`
-- **Summary:** Part 3 — `desmond_family.py`: federate two parents'
-  messages + calendars and diff them into a coverage-gap report
-  (FAMILY_GAPS.md / family.json), pure in-memory API for ParentPoint.
-  Part 4 — the no-files experience: `desmond_family_web.py` local browser
-  wizard (consent → plug phones in → calendar sign-in → gaps on the
-  page, memory-only until Save), `android_adb_exporter.py` (Android read
-  live over USB), `desmond_sources.py` (all message sources, one
-  in-memory API, mixed iPhone+Android proven), `desmond_calendar_auth.py`
-  (Google PKCE + Microsoft device-code sign-in, cached tokens). Four new
-  test suites; all 12 pass. Parts 1–2 same day: code review +
-  federation/consolidate (see SESSION_NOTES).
+- **Date:** 2026-07-29
+- **Branch:** `claude/project-status-assessment-pi7y12`
+- **Summary:** Added `desmond_crm_export.py`, a one-command bridge that reads
+  texts from any source (Mac Messages / iPhone backup / Android USB / an
+  existing export) and writes a `personalcrm_import.json` the companion
+  PersonalCRM app imports — turning mined messages (cell numbers already
+  attached via each message's `address`) into real conversations there. Reuses
+  `desmond_sources` + `desmond_federate.parse_export`; pure `build_crm_export()`
+  unit-tested (`test_desmond_crm_export.py`). Additive, self-contained, stdlib
+  only — no existing module touched, so the parentpoint/federation work is
+  unaffected. All 13 test suites pass.
+- **Previous session (2026-07-12, parts 3–5):** family federation
+  (`desmond_family.py`), the no-files web wizard (`desmond_family_web.py`),
+  Android-over-USB, in-memory source readers, calendar sign-in, and a
+  comprehensive audit (19 bugs fixed with regression tests). See SESSION_NOTES.

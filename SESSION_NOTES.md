@@ -1,11 +1,50 @@
 # DESMOND - Session History
 
 **Repository:** `desmond`  
-**Total Sessions Logged:** 8  
-**Date Range:** 2025-01-25 to 2026-07-12  
-**Last Updated:** 2026-07-12
+**Total Sessions Logged:** 9  
+**Date Range:** 2025-01-25 to 2026-07-29  
+**Last Updated:** 2026-07-29 (PersonalCRM bridge)
 
 This file contains a complete history of Claude Code sessions for this repository, automatically generated from transcript files. Sessions are listed in reverse chronological order (most recent first).
+
+---
+
+## 2026-07-29 — PersonalCRM bridge (`desmond_crm_export.py`)
+
+### What We Built
+Added the **one-command bridge from Desmond to PersonalCRM**. Desmond already mines a phone's texts into a canonical `messages.json`; PersonalCRM (the companion app) now has a real text-message ingestion adapter that turns that export into contacts + conversations. This session gives Chris a dummy-proof front door to produce the file:
+
+- **`desmond_crm_export.py`** — reads text messages from whatever source is handy and writes a single `personalcrm_import.json`:
+  - `--mac` (this Mac's Messages `chat.db`), `--iphone [DIR]` (a plugged-in iPhone's local backup — newest, or a specific folder), `--android` (a plugged-in Android over USB), `--from PATH` (an existing `messages.json` or export folder), or **no flag → auto-detect** the best available source.
+  - `--out PATH` (default `~/Downloads/personalcrm_import.json`).
+  - Prints exactly what to do next ("open PersonalCRM → Settings → Text Message Import → upload the file").
+- **`test_desmond_crm_export.py`** — synthetic tests for the pure logic.
+
+### Technical Details
+- Reuses the existing engine: `desmond_sources` (the in-memory readers) + `desmond_federate.parse_export` (validation). The device readers are imported **lazily** — inside `read_live_source()` — so `--from` and the unit tests never pull in the phone/backup modules.
+- `build_crm_export(export)` is a pure function (dict / JSON text / JSON bytes → payload). It validates via `parse_export`, then **slims** each message to exactly the fields PersonalCRM reads (`timestamp`, `conversation`, `conversation_type`, `address`, `sender`, `is_from_me`, `message_type`, `text`, `has_attachment`) — dropping reactions/word-counts/effects the CRM ignores — and stamps `app: "personalcrm"`, `schema: "desmond-crm-export/v1"`. Non-dict message rows are skipped defensively; missing keys fall back to sane defaults.
+- **Cell numbers ride along for free:** every message already carries the counterpart's phone/email in `address`, so PersonalCRM assigns numbers to people with no manual entry (the "pull it from the phone" path). Output re-validates as a Desmond export (round-trips through `parse_export`).
+- Auto-detect uses `desmond_sources.detect_available()` keys (`mac_messages`, `iphone_backups`, `android_devices`); `SourceError` from a live read is surfaced as a friendly one-line `SystemExit`, not a traceback.
+
+### Current Status
+- ✅ Bridge + test built and green. **All 13 repo test suites pass** (`test_desmond_crm_export.py` new).
+- ✅ No new dependencies (stdlib + existing Desmond modules only); nothing else touched.
+- 🚧 Exercised on synthetic exports + `--from`; not yet run against a real live source here (no Messages DB / phones in this environment).
+
+### Branch Info
+- Branch: `claude/project-status-assessment-pi7y12`. Commit `c7ad97e`.
+- Only two new files added; no existing module changed, so the ParentPoint/federation work is untouched.
+
+### Decisions Made
+- Desmond keeps emitting its **native canonical `messages.json`**; the Desmond→CRM field mapping lives on the PersonalCRM side (where its types are). This keeps one Desmond format for all consumers (federation, family, and now the CRM).
+- The bridge is additive and self-contained — safe to merge independently of the parentpoint branch.
+
+### Next Steps
+1. Real run on Chris's Mac/phone: `python3 desmond_crm_export.py`, then import the JSON into PersonalCRM and sanity-check names/numbers.
+2. (Optional) a `desmond.sh`-style double-clickable wrapper for the bridge.
+
+### Questions/Blockers
+- No device/Messages DB in this environment, so the live source paths are proven only via the shared `desmond_sources` tests, not real hardware.
 
 ---
 

@@ -683,6 +683,39 @@ trust.
 
 ---
 
+## Send your texts to PersonalCRM (one command)
+
+[PersonalCRM](https://github.com/christreadaway/personalcrm) — the companion
+relationship-analytics app — imports your real text messages so they drive its
+timeline, word cloud, search, and intent mining. `desmond_crm_export.py` is the
+one-command bridge:
+
+```bash
+cd ~/desmond
+python3 desmond_crm_export.py                 # auto-detect the best source
+python3 desmond_crm_export.py --mac           # this Mac's Messages (chat.db)
+python3 desmond_crm_export.py --iphone        # newest plugged-in iPhone backup
+python3 desmond_crm_export.py --iphone DIR    # a specific iPhone backup folder
+python3 desmond_crm_export.py --android       # plugged-in Android over USB
+python3 desmond_crm_export.py --from PATH      # an export you already made
+python3 desmond_crm_export.py --out PATH       # default ~/Downloads/personalcrm_import.json
+```
+
+Then in PersonalCRM: **Settings → "Text Message Import (Desmond)"** → upload the
+`personalcrm_import.json`.
+
+- **Cell numbers come along automatically.** Each message carries the
+  counterpart's phone/email (`address`), so PersonalCRM assigns numbers to
+  people without any typing. Anyone the texts only gave a name for can be given
+  a number by hand in the CRM.
+- **Local only.** The script just reads your messages and writes one JSON file —
+  nothing is uploaded. The output is the standard Desmond export shape (the same
+  `messages.json` every reader emits), validated before writing.
+- Under the hood it reuses `desmond_sources` (the in-memory readers) and
+  `desmond_federate.parse_export`; no new dependencies.
+
+---
+
 ## Using with Claude
 
 **For analysis and insights:**
@@ -811,11 +844,12 @@ trust.
 | `android_export.sh` | macOS launcher |
 | `android_export_windows.bat` | Windows launcher |
 
-### Federation & Consolidate (both platforms)
+### Federation, Consolidate & Integrations (both platforms)
 | File | Purpose |
 |------|---------|
 | `desmond_federate.py` | Merge two people's exports into one shared, consent-based archive (also an importable module for other apps) |
 | `desmond_consolidate.py` | **Optional mode:** one `PERSONAL_ARCHIVE.md` from messages + calendar (.ics) + contacts (.vcf) + call logs |
+| `desmond_crm_export.py` | **PersonalCRM bridge:** read texts from any source → write `personalcrm_import.json` for import into PersonalCRM (cell numbers included) |
 
 ### Documentation
 | File | Purpose |
