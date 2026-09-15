@@ -149,8 +149,22 @@ def build_archive(db_path, output_dir, order="oldest", photos_videos=False, verb
     pick._contacts_loaded = False
     pick.ensure_contacts()
 
+    def _reading(n_seen, n_kept):
+        # The database read is the longest silent stretch on a big history —
+        # print signs of life so the Terminal window doesn't look stuck.
+        if n_seen == 0:
+            print("Reading messages from the database… (no per-message output "
+                  "until the first 5,000)", flush=True)
+        else:
+            print(f"  Reading messages… {n_seen:,} read, {n_kept:,} kept so far",
+                  flush=True)
+
     records = pick.gather({"range": "all", "direction": "both", "order": order,
-                           "types": ["text", "attachments", "reactions"]})
+                           "types": ["text", "attachments", "reactions"]},
+                          progress=_reading if verbose else None)
+    if verbose:
+        print(f"Read {len(records):,} messages. Building conversations and copying "
+              "attachments…", flush=True)
 
     by_person = {}
     for r in records:
@@ -161,7 +175,11 @@ def build_archive(db_path, output_dir, order="oldest", photos_videos=False, verb
     rows = []
     tot_msg = tot_att = tot_missing = 0
 
-    for name, recs in by_person.items():
+    n_conv = len(by_person)
+    for i, (name, recs) in enumerate(by_person.items(), start=1):
+        if verbose and (i % 25 == 0 or i == n_conv):
+            print(f"  Conversation {i:,} of {n_conv:,} · {tot_att:,} attachments copied "
+                  f"so far", flush=True)
         safe = pick.safe_name(name) or "Unknown"
         cdir = os.path.join(output_dir, "conversations", safe)
         os.makedirs(cdir, exist_ok=True)

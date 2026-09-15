@@ -26,6 +26,7 @@
 | # | Item | Why | Effort |
 |---|------|-----|--------|
 | M1 | Real run of `desmond_oneshot_mac.command` on the Mac; read `~/Downloads/Desmond_Logs/*.json` | Everything here is proven on synthetic chat.db files only | 30 min |
+| M0 | ~~Progress lines during the silent database read and attachment copy~~ done 2026-09-15 | The Terminal window sat silent for minutes on a big history | done |
 | M2 | Incremental day-file ordering in `imessage_exporter.py` (late-synced iCloud messages land at the bottom of a day file) | Cosmetic in Markdown; JSON/CSV are sorted | 1 hr |
 | M3 | Contacts lookup fallback when AddressBook access is denied — prompt once with the `osascript` Contacts trigger from the launcher | Unknown-number naming is now correct, but names are nicer | 1 hr |
 | M4 | Optional: Pillow-free HEIC → JPG only via `sips` (already done) — document that on a non-Mac browser HEIC originals won't render | Docs only | 15 min |

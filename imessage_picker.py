@@ -350,8 +350,13 @@ def make_record(row, att, cursor, person, want_text, want_att, want_react):
     }
 
 
-def gather(f):
-    """Run all filters and return the list of approved-by-rule records."""
+PROGRESS_EVERY = 5000   # rows between "Reading messages…" progress lines
+
+
+def gather(f, progress=None):
+    """Run all filters and return the list of approved-by-rule records.
+    `progress(n_seen, n_kept)` is called every PROGRESS_EVERY rows so a long
+    read can show signs of life (the one-shot prints a line per call)."""
     ensure_contacts()
     people = set(f.get("people") or [])
     since, until = resolve_range(f.get("range", "7d"), f.get("start") or None, f.get("end") or None)
@@ -371,11 +376,17 @@ def gather(f):
 
     conn = open_db()
     cursor = conn.cursor()
+    if progress:
+        progress(0, 0)
     att = attachments_for(cursor)
 
     out = []
     seen = set()   # a message joined to two chats (merged SMS/iMessage) exports once
+    n_seen = 0
     for row in iter_messages(cursor, since, until):
+        n_seen += 1
+        if progress and n_seen % PROGRESS_EVERY == 0:
+            progress(n_seen, len(out))
         rowid, _, _, is_from_me, handle_id, _, _, chat_id, display_name, _ = row
         name, _ = conversation_name(handle_id, chat_id, display_name, cursor)
         name = str(name)
@@ -404,6 +415,8 @@ def gather(f):
             rec["redacted"] = True
         out.append(rec)
     conn.close()
+    if progress:
+        progress(n_seen, len(out))
 
     out.sort(key=lambda r: r["timestamp"])
     if cap and len(out) > cap:
