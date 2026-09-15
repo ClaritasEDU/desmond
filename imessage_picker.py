@@ -734,6 +734,10 @@ def start_export_job(payload):
     return job
 
 
+PDF_PART_SIZE = 500        # messages per PDF part — small enough to render in seconds
+PDF_COMBINED_MAX = 1500    # above this, skip the single giant render; parts are the deliverable
+
+
 def export_records(records, people, f, progress=None):
     """Write the approved messages as an inline-media HTML transcript (plus
     markdown / JSON / CSV), copying the real attachments alongside. Returns a
@@ -909,21 +913,33 @@ def export_records(records, people, f, progress=None):
                    if m.get("category") == "photo" and not m.get("missing"))
     range_key = f.get("range", "range")
 
-    # 6a. With several conversations: ONE PDF PER CONVERSATION first, rendered
-    #     one at a time (small, quick, progress visible, one failure can't
-    #     take the others down), then the combined PDF.
+    # 6a. PDFs in PARTS, rendered one at a time. Each conversation is its own
+    #     section; a big conversation is split into parts of PDF_PART_SIZE
+    #     messages. Headless Chrome laying out thousands of messages + photos as
+    #     ONE page is what hangs — many small renders never do, each shows
+    #     progress, and one failure can't take the others down.
     pdf_sections = []
-    if len(people) > 1:
-        by_conv = defaultdict(list)
-        for hr in html_records:
-            by_conv[hr["person"]].append(hr)
-        names = sorted(by_conv, key=lambda n: str(n))
+    by_conv = defaultdict(list)
+    for hr in html_records:
+        by_conv[hr["person"]].append(hr)
+    names = sorted(by_conv, key=lambda n: str(n))
+    units = []   # (conversation, part_no, part_total, records)
+    for name in names:
+        recs_c = by_conv[name]
+        n_parts = max(1, -(-len(recs_c) // PDF_PART_SIZE))
+        for k in range(n_parts):
+            units.append((name, k + 1, n_parts, recs_c[k * PDF_PART_SIZE:(k + 1) * PDF_PART_SIZE]))
+    split_needed = len(units) > 1
+    if split_needed:
         sec_dir = os.path.join(folder, "sections")
         os.makedirs(sec_dir, exist_ok=True)
-        for i, name in enumerate(names, start=1):
-            recs_i = by_conv[name]
-            sec_html = os.path.join(sec_dir, f"{i:02d}_{safe_name(name)}.html")
-            sec_summary = f"{len(recs_i):,} messages · section {i} of {len(names)}"
+        for i, (name, part_no, part_total, recs_i) in enumerate(units, start=1):
+            part_tag = f"_part{part_no}of{part_total}" if part_total > 1 else ""
+            stem = f"{i:02d}_{safe_name(name)}{part_tag}"
+            sec_html = os.path.join(sec_dir, stem + ".html")
+            span = f"{recs_i[0]['date']} → {recs_i[-1]['date']}" if recs_i else ""
+            sec_summary = (f"{len(recs_i):,} messages · {span}"
+                           + (f" · part {part_no} of {part_total}" if part_total > 1 else ""))
             with open(sec_html, "w", encoding="utf-8") as hf:
                 # Attachments live one level up from sections/ — point there.
                 hf.write(render_html(
@@ -932,23 +948,33 @@ def export_records(records, people, f, progress=None):
                      for r in recs_i], [name], sec_summary, order))
             n_ph = sum(1 for r in recs_i for m in r["media"]
                        if m.get("category") == "photo" and not m.get("missing"))
-            print(f"Section {i} of {len(names)}: {name} ({len(recs_i):,} messages)", flush=True)
+            label_i = f"{name}" + (f" (part {part_no} of {part_total})" if part_total > 1 else "")
+            print(f"PDF {i} of {len(units)}: {label_i} — {len(recs_i):,} messages", flush=True)
             if progress:
-                progress.update("sections", i - 1, len(names),
-                                label=f"PDF {i} of {len(names)}: {name}")
-            sec_pdf, sec_err = make_pdf(folder, f"{i:02d}_{safe_name(name)}", range_key,
+                progress.update("sections", i - 1, len(units), label=f"PDF {i} of {len(units)}: {label_i}")
+            sec_pdf, sec_err = make_pdf(folder, stem, range_key,
                                         n_messages=len(recs_i), n_photos=n_ph, html_path=sec_html)
-            pdf_sections.append({"name": name, "pdf": sec_pdf, "error": sec_err,
-                                 "messages": len(recs_i)})
+            pdf_sections.append({"name": name, "part": part_no, "parts": part_total,
+                                 "pdf": sec_pdf, "error": sec_err, "messages": len(recs_i),
+                                 "span": span})
 
-    if progress:
-        progress.update("pdf", label=f"Combined PDF ({len(records):,} messages, {n_photos:,} photos)")
-    pdf_path, pdf_error = make_pdf(folder, label, range_key,
-                                   n_messages=len(records), n_photos=n_photos)
+    # 6b. ONE combined PDF only when the whole export is small enough to render
+    #     as a single page without hanging; otherwise the parts ARE the deliverable.
+    if len(records) > PDF_COMBINED_MAX:
+        pdf_path = None
+        pdf_error = (f"{len(records):,} messages is too many for one PDF render — delivered as "
+                     f"{len(units)} numbered PDFs instead (each is a conversation or a part of one).")
+        print(f"\n{pdf_error}", flush=True)
+    else:
+        if progress:
+            progress.update("pdf", label=f"Combined PDF ({len(records):,} messages, {n_photos:,} photos)")
+        pdf_path, pdf_error = make_pdf(folder, label, range_key,
+                                       n_messages=len(records), n_photos=n_photos)
 
     try:
         # Open the PDF itself when we have one; otherwise the folder.
-        subprocess.run(["open", pdf_path or folder], check=False)
+        first_part = next((sct["pdf"] for sct in pdf_sections if sct.get("pdf")), None)
+        subprocess.run(["open", pdf_path or first_part or folder], check=False)
     except Exception:
         pass
 
@@ -1550,12 +1576,15 @@ $("save").onclick = () => {
       const miss = d.attachments_missing ? ` (${Number(d.attachments_missing)} not downloaded from iCloud)` : "";
       let where = d.pdf_path
         ? `<br><br>📄 <b>Your PDF</b> (everything in order, photos inline) — it just opened: <code>${esc(d.pdf_path)}</code>`
-        : `<br><br>⚠️ No automatic PDF: ${esc(d.pdf_error || "")}`;
+        : (d.pdf_sections && d.pdf_sections.length && (d.pdf_error||"").includes("too many")
+            ? `<br><br>📄 <b>Your PDFs</b> are below — ${esc(d.pdf_error)}`
+            : `<br><br>⚠️ No automatic PDF: ${esc(d.pdf_error || "")}`);
       if (d.pdf_sections && d.pdf_sections.length) {
-        where += `<br><br><b>One PDF per conversation</b> (same folder):`;
+        where += `<br><br><b>Numbered PDFs, one per conversation</b> (a big conversation is split into parts; read them in order):`;
         d.pdf_sections.forEach(sct => {
-          where += sct.pdf ? `<br>📄 ${esc(sct.name)} — ${Number(sct.messages).toLocaleString()} messages — <code>${esc(sct.pdf.split("/").pop())}</code>`
-                           : `<br>⚠️ ${esc(sct.name)} — no PDF: ${esc(sct.error || "")}`;
+          const part = sct.parts > 1 ? ` part ${sct.part} of ${sct.parts}` : "";
+          where += sct.pdf ? `<br>📄 ${esc(sct.name)}${part} — ${Number(sct.messages).toLocaleString()} messages (${esc(sct.span||"")}) — <code>${esc(sct.pdf.split("/").pop())}</code>`
+                           : `<br>⚠️ ${esc(sct.name)}${part} — no PDF: ${esc(sct.error || "")}`;
         });
       }
       where += `<br>Folder with the transcript + the original photo/video files: <code>${esc(d.folder)}</code>`;
