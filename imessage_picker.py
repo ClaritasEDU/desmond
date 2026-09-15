@@ -920,10 +920,10 @@ def make_pdf(folder, label, range_key, n_messages=0, n_photos=0):
                     "\u201cSave as PDF\u201d.")
     html = os.path.join(folder, "conversation.html")
     pdf = os.path.join(folder, f"{label}_{range_key}.pdf")
-    timeout, budget = desmond_pdf.render_budget(n_messages, n_photos)
-    print(f"\nRendering PDF ({n_messages:,} messages, {n_photos:,} photos; up to "
-          f"{timeout // 60} min)…", flush=True)
-    err = desmond_pdf.convert(browser, html, pdf, timeout=timeout, budget_ms=budget)
+    budget = desmond_pdf.render_budget(n_messages, n_photos)
+    print(f"\nRendering PDF ({n_messages:,} messages, {n_photos:,} photos). This runs "
+          "until it finishes — a big thread can take several minutes…", flush=True)
+    err = desmond_pdf.convert(browser, html, pdf, budget_ms=budget)
     if err:
         return fail(f"PDF could not be rendered ({err}). Open conversation.html and click "
                     "\u201cSave as PDF\u201d.")

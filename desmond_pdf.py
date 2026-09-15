@@ -83,14 +83,15 @@ def pdf_command(browser, html_path, pdf_path, budget_ms=20000):
 
 
 def render_budget(n_messages=0, n_photos=0):
-    """(timeout_seconds, virtual_time_ms) scaled to the export: a 4,000-message
-    thread with hundreds of photos needs far more than a 5-minute cap."""
-    timeout = int(max(300, 120 + n_messages * 0.15 + n_photos * 1.5))
-    budget_ms = int(max(20000, 5000 + n_messages * 10 + n_photos * 150))
-    return timeout, budget_ms
+    """Virtual-time budget (ms) the browser is allowed for loading photos
+    before it snapshots the page, scaled to the export. Not a timeout: a
+    render is never abandoned — it runs until the browser finishes."""
+    return int(max(20000, 5000 + n_messages * 10 + n_photos * 150))
 
 
-def convert(browser, html_path, pdf_path, timeout=300, budget_ms=20000):
+def convert(browser, html_path, pdf_path, timeout=None, budget_ms=20000):
+    """Render html → pdf. Waits as long as the browser needs (no cap) unless
+    a `timeout` in seconds is explicitly given."""
     cmd = pdf_command(browser, html_path, pdf_path, budget_ms)
     try:
         subprocess.run(cmd, check=True, capture_output=True, timeout=timeout)
