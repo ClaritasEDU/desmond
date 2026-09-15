@@ -540,7 +540,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
    .wrap{max-width:none;padding:0;}
    .bar,.pdfhint{display:none!important;}
    h1{color:#111;} .sub,.day,.m .meta{color:#555;}
-   .person{color:#1a4f9c;border-top:1px solid #bbb;page-break-before:auto;}
+   .person{color:#1a4f9c;border-top:0;page-break-before:always;break-before:page;margin-top:0;padding-top:0;font-size:16px;}
+   .person:first-child{page-break-before:auto;break-before:auto;}
    .m{border-bottom:1px solid #e3e3e3;page-break-inside:avoid;break-inside:avoid;}
    .m .who{color:#1a4f9c;} .m.me .who{color:#1f7a4f;}
    img.att{max-width:300px;max-height:300px;border:1px solid #ccc;}
@@ -607,8 +608,14 @@ function updateBar(){
   if(remaining>0) more.textContent="Show next "+Math.min(PAGE_SIZE,remaining);
 }
 function reset(){
-  sorted=RECORDS.slice().sort((a,b)=> a.timestamp<b.timestamp?-1:(a.timestamp>b.timestamp?1:0));
-  if(order==="newest") sorted.reverse();
+  // Group by conversation first, then by time inside each — so an export of
+  // several threads reads as separate conversations, not one interleaved feed.
+  const byTime=(a,b)=> a.timestamp<b.timestamp?-1:(a.timestamp>b.timestamp?1:0);
+  sorted=RECORDS.slice().sort((a,b)=>{
+    const p=String(a.person).localeCompare(String(b.person));
+    if(p!==0) return p;
+    return order==="newest" ? byTime(b,a) : byTime(a,b);
+  });
   document.getElementById("out").innerHTML=""; shown=0; lastPerson=null; lastDay=null;
   appendPage();
 }
@@ -631,12 +638,13 @@ async function saveAsPdf(){
   window.print();
 }
 document.getElementById("pdf").onclick=saveAsPdf;
-// ?print=1 → build the full page and print automatically (used by desmond_pdf.py)
+reset();
+// ?print=1 → every message on the page, photos loaded, ready for headless
+// printing (desmond_pdf.py). MUST run after reset() has populated `sorted`.
 if(new URLSearchParams(location.search).get("print")==="1"){
   while(shown<sorted.length) appendPage();
   window.__desmondReady = waitForImages().then(()=>{ window.__desmondPrintReady=true; });
 }
-reset();
 </script></body></html>"""
 
 
@@ -839,6 +847,50 @@ def export_records(records, people, f):
             "missing_drive": len(missing_drive)}
 
 
+_PREVIEW_CACHE = os.path.join(os.path.expanduser("~/Library/Caches"), "Desmond", "preview")
+_BROWSER_IMAGE_EXTS = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+                       ".gif": "image/gif", ".webp": "image/webp"}
+
+
+def preview_photo_path(att_id):
+    """(path, mime) of a browser-displayable file for a photo attachment, or
+    (None, None). HEIC/TIFF are converted once with macOS `sips` into a small
+    cache under ~/Library/Caches/Desmond (never touching the original)."""
+    try:
+        conn = open_db()
+        try:
+            row = conn.execute(
+                "SELECT filename, mime_type, transfer_name FROM attachment WHERE ROWID = ?",
+                (att_id,)).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None, None
+    if not row or not row[0]:
+        return None, None
+    filename, mime, transfer = row
+    if attach.categorize(mime, transfer or filename) != "photo":
+        return None, None
+    src = os.path.expanduser(filename)
+    if not os.path.isfile(src):
+        return None, None
+    ext = os.path.splitext(src)[1].lower()
+    if ext in _BROWSER_IMAGE_EXTS:
+        return src, _BROWSER_IMAGE_EXTS[ext]
+    if ext in WEB_CONVERT_EXTS:
+        try:
+            os.makedirs(_PREVIEW_CACHE, exist_ok=True)
+            out = os.path.join(_PREVIEW_CACHE, f"{att_id}.jpg")
+            if not os.path.isfile(out):
+                subprocess.run(["sips", "-s", "format", "jpeg", "-Z", "800", src, "--out", out],
+                               check=True, capture_output=True)
+            return out, "image/jpeg"
+        except Exception:
+            return None, None
+    # Unknown image type — let the browser try.
+    return src, (mime or "application/octet-stream")
+
+
 def make_pdf(folder, label, range_key):
     """Render <folder>/conversation.html to <folder>/<label>_<range>.pdf.
     Returns (pdf_path, None) or (None, reason)."""
@@ -972,6 +1024,8 @@ PAGE = r"""<!DOCTYPE html>
   .m .meta { color:var(--mut); font-size:11.5px; white-space:nowrap; }
   .m.off { opacity:.4; }
   .m .body b { color:var(--accent); }
+  .m .body img.pv { display:block; margin:6px 0 2px; max-width:180px; max-height:180px; border-radius:8px; border:1px solid var(--line); }
+  .m .body .pvtag { display:inline-block; margin-top:4px; color:var(--mut); font-size:12px; }
   /* Full-page gate while the server reads every conversation out of Messages.
      Nothing can be clicked until the list is real. */
   #loading { position:fixed; inset:0; background:var(--bg); z-index:50; display:flex; align-items:center; justify-content:center; text-align:center; padding:24px; }
@@ -1003,7 +1057,12 @@ PAGE = r"""<!DOCTYPE html>
 
   <div class="card">
     <h2>1 · Who</h2>
-    <input type="text" id="search" placeholder="Search conversations…" autocomplete="off">
+    <input type="text" id="search" placeholder="Search conversations… (a name, a number, a group)" autocomplete="off">
+    <div class="mut" style="margin:6px 0 8px">
+      <button class="linkbtn" id="pickshown">Select all shown</button> ·
+      <button class="linkbtn" id="clearshown">Clear all shown</button>
+      <span id="pickhint"></span>
+    </div>
     <div class="chips" id="chips"></div>
     <div id="plist"><div class="mut" style="padding:12px">Loading conversations…</div></div>
     <div class="mut" id="phint"></div>
@@ -1144,7 +1203,18 @@ function renderPeople(filter) {
     list.appendChild(row);
   });
   if (!shown.length) list.innerHTML = '<div class="mut" style="padding:12px">No matches.</div>';
+  lastShown = shown;
+  $("pickhint").textContent = q ? `(${shown.length} match "${filter}")` : `(${shown.length} shown)`;
 }
+let lastShown = [];
+$("pickshown").onclick = () => {
+  lastShown.forEach(p => state.people.add(p.name));
+  renderChips(); renderPeople($("search").value); invalidatePreview();
+};
+$("clearshown").onclick = () => {
+  lastShown.forEach(p => state.people.delete(p.name));
+  renderChips(); renderPeople($("search").value); invalidatePreview();
+};
 function renderChips() {
   const c = $("chips"); c.innerHTML = "";
   state.people.forEach(name => {
@@ -1256,14 +1326,21 @@ function renderPreview(d) {
   d.records.forEach(r => {
     const m = document.createElement("label");
     m.className = "m"; m.dataset.id = r.id;
-    const body = r.message_type === "reaction" ? "<i>"+esc(r.text)+"</i>" : esc(r.text);
+    // The text field carries "[photo]" stand-ins; show the real photos too, so
+    // the preview is what the PDF will contain.
+    const shown = r.message_type === "reaction" ? "<i>"+esc(r.text)+"</i>" : esc(r.text_plain || (r.attachments && r.attachments.length ? "" : r.text));
+    let media = "";
+    (r.attachments || []).forEach(a => {
+      if (a.category === "photo") media += `<img class="pv" loading="lazy" src="/api/media/${Number(a.id)}" alt="photo" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'pvtag',textContent:'[photo — not downloaded from iCloud]'}))">`;
+      else media += `<span class="pvtag">[${esc(a.category)}${a.transfer_name ? ": " + esc(a.transfer_name) : ""}]</span> `;
+    });
     m.innerHTML = `<input type="checkbox" checked>
       <span class="meta">${esc(r.date)} ${esc(String(r.time||"").slice(0,5))}<br>${esc(r.person)}</span>
-      <span class="body"><b>${esc(r.sender)}:</b> ${body}</span>`;
+      <span class="body"><b>${esc(r.sender)}:</b> ${shown}${media}</span>`;
     m.querySelector("input").onchange = e => m.classList.toggle("off", !e.target.checked);
     box.appendChild(m);
   });
-  let note = `${d.total.toLocaleString()} messages match`;
+  let note = `${d.total.toLocaleString()} messages match · photos shown here are the real files that go into the PDF`;
   if (d.total > d.records.length) note += ` · showing first ${d.records.length.toLocaleString()} (the rest are still included)`;
   if (d.redacted) note += " · 🔒 redacted";
   $("pvcount").textContent = note;
@@ -1354,6 +1431,9 @@ class Handler(BaseHTTPRequestHandler):
         if not self._host_ok():
             self._send(403, json.dumps({"error": "unexpected Host header"}))
             return
+        if self.path.startswith("/api/media/"):
+            self._serve_media(self.path[len("/api/media/"):])
+            return
         if self.path == "/" or self.path.startswith("/index"):
             page = PAGE.replace("__DEFAULT_DEST__", _h(default_dest()))
             page = page.replace(
@@ -1367,6 +1447,32 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, json.dumps({"error": str(e)}))
         else:
             self._send(404, json.dumps({"error": "not found"}))
+
+    def _serve_media(self, ident):
+        """Serve the REAL photo for one attachment so the preview shows what the
+        PDF will contain. Only photos, only by attachment ROWID looked up in
+        chat.db (never a client-supplied path), only on the loopback Host."""
+        try:
+            att_id = int(ident.split("?")[0])
+        except ValueError:
+            self._send(404, json.dumps({"error": "bad id"}))
+            return
+        path, mime = preview_photo_path(att_id)
+        if not path:
+            self._send(404, json.dumps({"error": "no such photo"}))
+            return
+        try:
+            with open(path, "rb") as fh:
+                data = fh.read()
+        except OSError:
+            self._send(404, json.dumps({"error": "unreadable"}))
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", mime)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "private, max-age=3600")
+        self.end_headers()
+        self.wfile.write(data)
 
     def do_POST(self):
         try:

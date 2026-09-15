@@ -1,11 +1,46 @@
 # DESMOND - Session History
 
 **Repository:** `desmond`  
-**Total Sessions Logged:** 12  
+**Total Sessions Logged:** 13  
 **Date Range:** 2025-01-25 to 2026-09-15  
 **Last Updated:** 2026-09-15 (full code review + Mac fixes)
 
 This file contains a complete history of Claude Code sessions for this repository, automatically generated from transcript files. Sessions are listed in reverse chronological order (most recent first).
+
+---
+
+## 2026-09-15 (part 4) — Picker: one PDF per export, real photo previews, multi-thread grouping
+
+### What We Built (driven by Chris's first real picker runs)
+- **Save = one PDF** of the whole export, in order, photos inline, named
+  `<Person>_<range>.pdf`, opened automatically (headless Chrome/Edge/Chromium
+  via `desmond_pdf`; fallback text points at the in-page button).
+- **Bug fixed: PDF held only the first 100 messages** (4,400 messages → 8
+  pages). The `?print=1` headless path ran its show-all loop before
+  `reset()` had loaded the records. Verified: 600-message export → 33 pages,
+  all 600 rendered.
+- **Multiple conversations are grouped** — each thread is its own section
+  starting on a new page, chronological inside; no more interleaving.
+- **Preview shows the real photos** (new local `/api/media/<id>` route,
+  loopback-only, HEIC via `sips` into `~/Library/Caches/Desmond`), and says
+  they are what goes into the PDF. Offloaded photos say so.
+- **Select all shown / Clear all shown** in the people list: search a name,
+  one click picks every thread with that person (group chats included).
+- Loading gate on the picker page until the conversation list is read;
+  default range All time; choosers 1 week / 1 month / 3 / 6 months / 1 year.
+- One-shot: progress lines during the read and copy phases.
+
+### Current Status
+- ✅ 14 suites pass; e2e PDFs rendered with headless Chromium and checked.
+- 🚧 Chris's first real one-shot and picker runs happened this session; the
+  8-page PDF he saw is the bug above, fixed after his run.
+
+### Branch Info
+- `claude/charming-newton-k8s1b8` (parts 2–3 merged; part 4 pending merge).
+
+### Next Steps
+1. Merge, `cd ~/desmond && git pull origin main`, re-run the picker export.
+2. Confirm the PDF page count and per-conversation sections on real data.
 
 ---
 

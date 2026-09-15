@@ -32,6 +32,10 @@ def main():
     check("overflow-wrap:anywhere" in html, "long unbroken text wraps instead of running off the page")
     check("waitForImages" in html and 'loading="eager"' in html, "photos are force-loaded before print")
     check('get("print")==="1"' in html, "?print=1 auto-renders every message for headless printing")
+    check(html.index("reset();") < html.index('get("print")==="1"'),
+          "headless print path runs AFTER reset() has loaded the records (was printing only the first 100)")
+    check("page-break-before:always" in html, "each conversation starts on a new page in the PDF")
+    check("localeCompare(String(b.person))" in html, "records are grouped by conversation before time")
 
     with tempfile.TemporaryDirectory() as tmp:
         # --- conversation discovery -------------------------------------------
