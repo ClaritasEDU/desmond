@@ -426,6 +426,11 @@ def main():
             picker.MESSAGES_DB, picker.PORT = saved_db, saved_port
             picker._conv_name_cache.clear()
 
+    # The picker defaults to the whole history, not the last 7 days.
+    check('class="opt on" data-r="all"' in picker.PAGE, "date range defaults to All time in the UI")
+    check('range: "all"' in picker.PAGE, "page state defaults to All time")
+    check(picker.filter_summary({}).startswith("All time"), "server-side default range is All time")
+
     print()
     if failures:
         print(f"{len(failures)} test(s) FAILED")

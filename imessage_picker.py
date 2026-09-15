@@ -359,7 +359,7 @@ def gather(f, progress=None):
     read can show signs of life (the one-shot prints a line per call)."""
     ensure_contacts()
     people = set(f.get("people") or [])
-    since, until = resolve_range(f.get("range", "7d"), f.get("start") or None, f.get("end") or None)
+    since, until = resolve_range(f.get("range", "all"), f.get("start") or None, f.get("end") or None)
     direction = f.get("direction", "both")
     # An explicit empty list means "nothing" (every content toggle off) —
     # only a MISSING key falls back to everything.
@@ -429,7 +429,7 @@ def safe_name(name):
 
 
 def filter_summary(f):
-    bits = [RANGE_LABELS.get(f.get("range", "7d"), f.get("range", ""))]
+    bits = [RANGE_LABELS.get(f.get("range", "all"), f.get("range", ""))]
     d = {"both": "both directions", "mine": "only my messages", "theirs": "only their messages"}
     bits.append(d.get(f.get("direction", "both"), ""))
     bits.append("includes: " + ", ".join(f.get("types") or []))
@@ -969,11 +969,11 @@ PAGE = r"""<!DOCTYPE html>
     <h2>2 · How far back</h2>
     <div class="grid" id="ranges">
       <div class="opt" data-r="1d">Last 24 hours</div>
-      <div class="opt on" data-r="7d">Last 7 days</div>
+      <div class="opt" data-r="7d">Last 7 days</div>
       <div class="opt" data-r="30d">Last 30 days</div>
       <div class="opt" data-r="90d">Last 90 days</div>
       <div class="opt" data-r="365d">Last year</div>
-      <div class="opt" data-r="all">All time</div>
+      <div class="opt on" data-r="all">All time</div>
     </div>
     <div class="opt" data-r="custom" style="margin-top:9px">Custom date range</div>
     <div class="custom" id="custom">
@@ -1062,7 +1062,7 @@ PAGE = r"""<!DOCTYPE html>
 </div>
 
 <script>
-const state = { people: new Set(), range: "7d", dir: "both", order: "oldest", redact: false, mirror: true, shown: [],
+const state = { people: new Set(), range: "all", dir: "both", order: "oldest", redact: false, mirror: true, shown: [],
                 previewed: null };   // the exact filters the visible preview was built from
 
 function $(id){ return document.getElementById(id); }
