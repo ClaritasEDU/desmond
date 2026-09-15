@@ -470,6 +470,9 @@ def main():
             desmond_pdf.find_browser = lambda explicit=None: None
             pdf, err = picker.make_pdf(folder, "Mom", "all")
             check(pdf is None and "Save as PDF" in err, "no browser → clear fallback instruction, export still ok")
+            readme = os.path.join(folder, "PDF_README.txt")
+            check(os.path.exists(readme) and "Reason:" in open(readme).read(),
+                  "the reason is written to PDF_README.txt in the export folder")
         finally:
             desmond_pdf.find_browser = orig
     check('d.pdf_path' in picker.PAGE and "Your PDF" in picker.PAGE, "result panel leads with the PDF")

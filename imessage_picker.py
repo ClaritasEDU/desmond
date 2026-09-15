@@ -830,7 +830,10 @@ def export_records(records, people, f):
     #    people actually want to hand to someone. Rendered from the transcript
     #    by a headless Chrome/Edge/Chromium already on the Mac; if none is
     #    installed, the transcript's own "Save as PDF" button is the fallback.
-    pdf_path, pdf_error = make_pdf(folder, label, f.get("range", "range"))
+    n_photos = sum(1 for ms in media_by_id.values() for m in ms
+                   if m.get("category") == "photo" and not m.get("missing"))
+    pdf_path, pdf_error = make_pdf(folder, label, f.get("range", "range"),
+                                   n_messages=len(records), n_photos=n_photos)
 
     try:
         # Open the PDF itself when we have one; otherwise the folder.
@@ -891,22 +894,40 @@ def preview_photo_path(att_id):
     return src, (mime or "application/octet-stream")
 
 
-def make_pdf(folder, label, range_key):
+def make_pdf(folder, label, range_key, n_messages=0, n_photos=0):
     """Render <folder>/conversation.html to <folder>/<label>_<range>.pdf.
-    Returns (pdf_path, None) or (None, reason)."""
+    Returns (pdf_path, None) or (None, reason). The reason is also printed to
+    the Terminal window and written to PDF_README.txt in the folder, so it can
+    never silently vanish."""
+    def fail(reason):
+        print(f"\n⚠️  No automatic PDF: {reason}", flush=True)
+        try:
+            with open(os.path.join(folder, "PDF_README.txt"), "w", encoding="utf-8") as fh:
+                fh.write("No automatic PDF was made.\n\nReason: " + reason + "\n\n"
+                         "To make one yourself: open conversation.html in this folder, click "
+                         "\"Save as PDF\" at the top, then choose Save as PDF in the print window.\n")
+        except OSError:
+            pass
+        return None, reason
     try:
         import desmond_pdf
     except ImportError:
-        return None, "desmond_pdf.py is missing next to imessage_picker.py."
+        return fail("desmond_pdf.py is missing next to imessage_picker.py.")
     browser = desmond_pdf.find_browser()
     if not browser:
-        return None, ("No Chrome/Edge/Chromium on this Mac for automatic PDFs. Open "
-                      "conversation.html and click \u201cSave as PDF\u201d, or install Google Chrome.")
+        return fail("No Chrome/Edge/Chromium on this Mac for automatic PDFs. Install Google "
+                    "Chrome (free) and Save again, or open conversation.html and click "
+                    "\u201cSave as PDF\u201d.")
     html = os.path.join(folder, "conversation.html")
     pdf = os.path.join(folder, f"{label}_{range_key}.pdf")
-    err = desmond_pdf.convert(browser, html, pdf)
+    timeout, budget = desmond_pdf.render_budget(n_messages, n_photos)
+    print(f"\nRendering PDF ({n_messages:,} messages, {n_photos:,} photos; up to "
+          f"{timeout // 60} min)…", flush=True)
+    err = desmond_pdf.convert(browser, html, pdf, timeout=timeout, budget_ms=budget)
     if err:
-        return None, f"PDF could not be rendered ({err}). Open conversation.html and click \u201cSave as PDF\u201d."
+        return fail(f"PDF could not be rendered ({err}). Open conversation.html and click "
+                    "\u201cSave as PDF\u201d.")
+    print(f"PDF written: {pdf}", flush=True)
     return pdf, None
 
 
