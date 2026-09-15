@@ -669,7 +669,72 @@ def render_html(records, people, summary, default_order):
             .replace("__DEFAULT_ORDER__", "newest" if default_order == "newest" else "oldest"))
 
 
-def export_records(records, people, f):
+# ---- export progress (the page polls /api/progress/<job>) ----------------
+_JOBS = {}
+_JOBS_LOCK = threading.Lock()
+
+
+class Progress:
+    """Phase + percent for one export job. Weights are rough shares of wall
+    time so the bar moves steadily: attachments and PDFs dominate."""
+    PHASES = [("read", "Reading messages", 5), ("copy", "Copying photos & files", 30),
+              ("write", "Writing transcript files", 5), ("sections", "PDF per conversation", 25),
+              ("pdf", "Combined PDF", 25), ("drive", "Mirroring to Google Drive", 10)]
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.state = {"phase": "read", "label": "Starting…", "done": 0, "total": 0,
+                      "percent": 0, "finished": False, "result": None, "log": []}
+
+    def update(self, phase, done=0, total=0, label=None):
+        idx = [k for k, _, _ in self.PHASES].index(phase)
+        before = sum(w for _, _, w in self.PHASES[:idx])
+        weight = self.PHASES[idx][2]
+        frac = (done / total) if total else 0.0
+        with self.lock:
+            st = self.state
+            st.update(phase=phase, done=done, total=total,
+                      label=label or self.PHASES[idx][1],
+                      percent=min(99, int(before + weight * frac)))
+            line = f"{st['label']}" + (f" ({done:,} of {total:,})" if total else "")
+            if not st["log"] or st["log"][-1] != line:
+                st["log"].append(line)
+                st["log"] = st["log"][-12:]
+
+    def finish(self, result):
+        with self.lock:
+            self.state.update(finished=True, result=result, percent=100,
+                              label="Done" if result.get("ok") else "Failed")
+
+    def snapshot(self):
+        with self.lock:
+            return dict(self.state)
+
+
+def start_export_job(payload):
+    """Run the export on a background thread; return its job id at once."""
+    import uuid
+    job = uuid.uuid4().hex
+    prog = Progress()
+    with _JOBS_LOCK:
+        _JOBS[job] = prog
+
+    def run():
+        try:
+            prog.update("read", label="Reading messages")
+            deselected = set(payload.get("deselected") or [])
+            records = [r for r in gather(payload) if r["id"] not in deselected]
+            result = export_records(records, payload.get("people") or [], payload,
+                                    progress=prog)
+        except Exception as e:
+            result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        prog.finish(result)
+
+    threading.Thread(target=run, daemon=True).start()
+    return job
+
+
+def export_records(records, people, f, progress=None):
     """Write the approved messages as an inline-media HTML transcript (plus
     markdown / JSON / CSV), copying the real attachments alongside. Returns a
     result dict."""
@@ -690,8 +755,14 @@ def export_records(records, people, f):
     # Copy the real attachment files; build per-message media lists.
     att_saved = att_missing = 0
     media_by_id = {}
+    n_with_att = sum(1 for r in records if r.get("attachments")) if include_att else 0
+    n_done = 0
     for r in records:
         media = []
+        if include_att and r.get("attachments") and progress:
+            n_done += 1
+            if n_done % 10 == 0 or n_done == n_with_att:
+                progress.update("copy", n_done, n_with_att)
         if include_att:
             for a in (r.get("attachments") or []):
                 info = copy_attachment(a, r, folder)
@@ -711,6 +782,8 @@ def export_records(records, people, f):
     dates = [r["date"] for r in records]
     first_date, last_date = min(dates), max(dates)
 
+    if progress:
+        progress.update("write")
     # 1. HTML transcript — inline photos/videos, newest/oldest toggle.
     html_records = [{
         "person": r["person"], "date": r["date"], "time": r["time"],
@@ -799,6 +872,8 @@ def export_records(records, people, f):
         if drive_base:
             drive_folder = os.path.join(drive_base, os.path.basename(folder))
             copy_errors = []
+            if progress:
+                progress.update("drive")
             try:
                 attach.mirror_tree(folder, drive_folder, errors=copy_errors)
             except OSError as e:
@@ -858,11 +933,16 @@ def export_records(records, people, f):
             n_ph = sum(1 for r in recs_i for m in r["media"]
                        if m.get("category") == "photo" and not m.get("missing"))
             print(f"Section {i} of {len(names)}: {name} ({len(recs_i):,} messages)", flush=True)
+            if progress:
+                progress.update("sections", i - 1, len(names),
+                                label=f"PDF {i} of {len(names)}: {name}")
             sec_pdf, sec_err = make_pdf(folder, f"{i:02d}_{safe_name(name)}", range_key,
                                         n_messages=len(recs_i), n_photos=n_ph, html_path=sec_html)
             pdf_sections.append({"name": name, "pdf": sec_pdf, "error": sec_err,
                                  "messages": len(recs_i)})
 
+    if progress:
+        progress.update("pdf", label=f"Combined PDF ({len(records):,} messages, {n_photos:,} photos)")
     pdf_path, pdf_error = make_pdf(folder, label, range_key,
                                    n_messages=len(records), n_photos=n_photos)
 
@@ -1088,6 +1168,11 @@ PAGE = r"""<!DOCTYPE html>
   @keyframes spin { to { transform:rotate(360deg); } }
   #loading.err .spin { display:none; }
   #loading.err h2 { color:#e88; }
+  #prog { display:none; margin-top:16px; padding:15px; border-radius:10px; background:var(--card); border:1px solid var(--line); }
+  #prog .bar { height:14px; background:#0f1115; border:1px solid var(--line); border-radius:8px; overflow:hidden; margin:8px 0; }
+  #prog .fill { height:100%; width:0; background:var(--accent); transition:width .4s; }
+  #prog .pct { font-weight:700; }
+  #prog .log { color:var(--mut); font-size:12.5px; margin-top:6px; white-space:pre-line; }
   .result { padding:15px; border-radius:10px; margin-top:16px; display:none; }
   .result.ok { display:block; background:#16321f; border:1px solid var(--ok); }
   .result.err { display:block; background:#321616; border:1px solid #a33; }
@@ -1213,7 +1298,12 @@ PAGE = r"""<!DOCTYPE html>
     </div>
   </div>
 
-  <div class="result" id="result"></div>
+      <div id="prog">
+      <div><span class="pct" id="ppct">0%</span> · <span id="plabel">Starting…</span></div>
+      <div class="bar"><div class="fill" id="pfill"></div></div>
+      <div class="log" id="plog"></div>
+    </div>
+    <div class="result" id="result"></div>
 </div>
 
 <script>
@@ -1410,10 +1500,30 @@ $("save").onclick = () => {
     .filter(m => !m.querySelector("input").checked)
     .map(m => parseInt(m.dataset.id));
   const btn = $("save"); btn.disabled = true; btn.textContent = "Saving…";
+  $("result").className = "result"; $("result").innerHTML = "";
+  $("prog").style.display = "block"; $("pfill").style.width = "0%"; $("ppct").textContent = "0%";
+  $("plabel").textContent = "Starting…"; $("plog").textContent = "";
+  $("prog").scrollIntoView({behavior:"smooth"});
   fetch("/api/export", { method:"POST", headers:{"Content-Type":"application/json"},
     body: JSON.stringify({ ...state.previewed, deselected }) })
-  .then(r => r.json()).then(d => {
+  .then(r => r.json()).then(start => {
+    if (!start.ok) { btn.disabled=false; btn.textContent="Save export"; $("prog").style.display="none"; showErr(start.error || "Failed."); return; }
+    return new Promise((resolve, reject) => {
+      const t0 = Date.now();
+      const tick = () => fetch("/api/progress/" + start.job).then(r => r.json()).then(p => {
+        const secs = Math.round((Date.now() - t0) / 1000);
+        const el = secs >= 60 ? `${Math.floor(secs/60)}m ${secs%60}s` : `${secs}s`;
+        $("pfill").style.width = p.percent + "%"; $("ppct").textContent = p.percent + "%";
+        $("plabel").textContent = p.label + (p.total ? ` (${Number(p.done).toLocaleString()} of ${Number(p.total).toLocaleString()})` : "") + ` · ${el} elapsed`;
+        $("plog").textContent = (p.log || []).join("\n");
+        if (p.finished) resolve(p.result); else setTimeout(tick, 700);
+      }).catch(reject);
+      tick();
+    });
+  }).then(d => {
+    if (!d) return;
     btn.disabled = false; btn.textContent = "Save export";
+    $("prog").style.display = "none";
     const res = $("result");
     if (d.ok) {
       res.className = "result ok";
@@ -1443,7 +1553,7 @@ $("save").onclick = () => {
         + `<br><br><code>conversation.html</code> in that folder is the same thing as a web page (videos play there; the PDF shows a caption for them). <code>VERIFY_REPORT.md</code> has the per-place check.`;
     } else { res.className = "result err"; res.innerHTML = "⚠️ " + esc(d.error || "Failed."); }
     res.scrollIntoView({behavior:"smooth"});
-  }).catch(e => { btn.disabled=false; btn.textContent="Save export"; showErr(e); });
+  }).catch(e => { btn.disabled=false; btn.textContent="Save export"; $("prog").style.display="none"; showErr(e); });
 };
 function showErr(msg){ const res=$("result"); res.className="result err"; res.innerHTML="⚠️ "+esc(""+msg); }
 </script>
@@ -1492,6 +1602,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path.startswith("/api/media/"):
             self._serve_media(self.path[len("/api/media/"):])
+            return
+        if self.path.startswith("/api/progress/"):
+            job = self.path[len("/api/progress/"):].split("?")[0]
+            with _JOBS_LOCK:
+                prog = _JOBS.get(job)
+            if not prog:
+                self._send(404, json.dumps({"error": "no such job"}))
+                return
+            self._send(200, json.dumps(prog.snapshot()))
             return
         if self.path == "/" or self.path.startswith("/index"):
             page = PAGE.replace("__DEFAULT_DEST__", _h(default_dest()))
@@ -1561,9 +1680,8 @@ class Handler(BaseHTTPRequestHandler):
                         "error": "No people selected — pick at least one "
                                  "conversation before exporting."}))
                     return
-                deselected = set(payload.get("deselected") or [])
-                records = [r for r in gather(payload) if r["id"] not in deselected]
-                self._send(200, json.dumps(export_records(records, people, payload)))
+                # Runs in the background; the page polls /api/progress/<job>.
+                self._send(200, json.dumps({"ok": True, "job": start_export_job(payload)}))
             else:
                 self._send(404, json.dumps({"error": "not found"}))
         except Exception as e:

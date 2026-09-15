@@ -390,6 +390,30 @@ def main():
                 code, _ = http(port, "/api/media/abc", f"127.0.0.1:{port}")
                 check(code == 404, "a non-numeric id → 404")
                 check('src="/api/media/${Number(a.id)}"' in picker.PAGE, "preview renders real photo thumbnails")
+
+                # -- Save runs in the background and the page polls a progress bar
+                import time as _time
+                own = f"http://127.0.0.1:{port}"
+                code, body = http(port, "/api/export", f"127.0.0.1:{port}", "POST",
+                                  json.dumps({"people": ["+15125550100"], "range": "all", "order": "oldest",
+                                              "types": ["text", "attachments", "reactions"],
+                                              "mirror_drive": False, "dest": os.path.join(tmp, "bgexport")}),
+                                  origin=own)
+                start = json.loads(body)
+                check(code == 200 and start.get("ok") and start.get("job"), "POST /api/export returns a job id at once")
+                snap = None
+                for _ in range(200):
+                    code, body = http(port, "/api/progress/" + start["job"], f"127.0.0.1:{port}")
+                    snap = json.loads(body)
+                    if snap.get("finished"):
+                        break
+                    _time.sleep(0.1)
+                check(snap and snap.get("finished") and snap["percent"] == 100, "progress reaches 100% and finished")
+                check(snap and snap["result"] and snap["result"].get("ok"), "background export result is ok")
+                check(snap and any("Copying" in l or "Writing" in l for l in snap.get("log", [])), "progress log records the phases")
+                code, _ = http(port, "/api/progress/nope", f"127.0.0.1:{port}")
+                check(code == 404, "unknown job → 404")
+                check('id="prog"' in picker.PAGE and '"/api/progress/" + start.job' in picker.PAGE, "page shows a progress bar and polls it")
                 code, _ = http(port, "/api/preview", f"evil.example:{port}", "POST",
                                '{"people":["+15125550100"],"range":"all"}')
                 check(code == 403, f"POST with a rebinding Host is refused (got {code})")
@@ -479,6 +503,15 @@ def main():
     check("pdf_sections" in picker.PAGE and "One PDF per conversation" in picker.PAGE,
           "result panel lists the per-conversation PDFs")
     check('html_path=sec_html' in open(picker.__file__).read(), "sections are rendered from their own HTML, one at a time")
+
+    # Progress percent moves monotonically through the phases.
+    pr = picker.Progress()
+    pr.update("read"); a = pr.snapshot()["percent"]
+    pr.update("copy", 5, 10); b = pr.snapshot()["percent"]
+    pr.update("sections", 1, 2, label="PDF 2 of 2: Mom"); c = pr.snapshot()["percent"]
+    pr.update("pdf"); d_ = pr.snapshot()["percent"]
+    check(a <= b < c < d_ < 100, f"progress percent climbs through phases ({a},{b},{c},{d_})")
+    pr.finish({"ok": True}); check(pr.snapshot()["percent"] == 100 and pr.snapshot()["finished"], "finish → 100%")
 
     # One click selects every conversation matching the search (all threads with a person).
     check('id="pickshown"' in picker.PAGE and "lastShown.forEach(p => state.people.add(p.name))" in picker.PAGE,
