@@ -80,6 +80,12 @@ messages) or several conversations come out as **numbered PDFs** of up to
 order. (One giant render is what used to hang.) (Needs Chrome, Edge or Chromium
 on the Mac; without one it tells you to use the button below instead.)
 
+**Prefer plain text?** In the picker's Output card choose **Plain text (.txt)**.
+It writes one readable `.txt` (a section per conversation, a header per day,
+`HH:MM  Sender: text` lines, attachments noted as `[photo: name]`) instantly,
+with no browser involved, plus one `.txt` per conversation when several are
+picked. Photo/video files are still copied into the folder.
+
 **PDF of a conversation from the full archive:** open its `conversation.html` and click
 **🖨 Save as PDF** in the top bar. It shows every message, waits for the photos
 to load, then opens the Print window — choose **Save as PDF** (Safari: the PDF

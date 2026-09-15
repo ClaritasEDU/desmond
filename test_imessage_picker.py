@@ -526,6 +526,27 @@ def main():
             check(all(sct["pdf"] and os.path.exists(sct["pdf"]) for sct in res["pdf_sections"]), "every part PDF written")
             check(sum(sct["messages"] for sct in res["pdf_sections"]) == len(big), "parts cover every message")
             check([sct["part"] for sct in res["pdf_sections"]] == list(range(1, n_parts + 1)), "parts are numbered in order")
+            # Part files lead with the conversation name; titles + day headers name it too
+            check(all(os.path.basename(sct["pdf"]).startswith("Mom_part") for sct in res["pdf_sections"]),
+                  "part PDF file names lead with the conversation name")
+            check('d.textContent=r.person+" · "+r.date' in picker.HTML_TEMPLATE,
+                  "every day header inside a transcript names the conversation")
+
+            # Plain-text output: instant, one file, one per conversation when several
+            two = big[:30] + [dict(r, id=r["id"] + 100000, person="Dad", sender="Dad") for r in big[:20]]
+            res3 = picker.export_records(two, ["Mom", "Dad"], dict(f_, format="txt", dest=os.path.join(tmp, "out3")))
+            check(res3["ok"] and res3["txt_path"] and os.path.exists(res3["txt_path"]), "txt format writes a combined .txt")
+            check(res3["pdf_path"] is None and res3["pdf_sections"] == [], "txt format renders no PDFs")
+            check(len(res3["txt_sections"]) == 2 and all(os.path.exists(t) for t in res3["txt_sections"]),
+                  "txt format writes one .txt per conversation when several are picked")
+            check([os.path.basename(t).split("_")[0] for t in res3["txt_sections"]] == ["Dad", "Mom"],
+                  "per-conversation .txt names lead with the conversation")
+            body = open(res3["txt_path"], encoding="utf-8").read()
+            check("=== \n" not in body and body.count("=" * 72) == 4 and "--- 2024-01-01 ---" in body,
+                  "txt has a section per conversation and a day header")
+            check("00:00  Mom: m0" in body and "00:00  Dad: m0" in body, "txt lines read HH:MM  Sender: text")
+            check('data-f="txt"' in picker.PAGE and "format: state.format" in picker.PAGE, "page offers the PDF / plain-text choice")
+
             small = big[:50]
             res2 = picker.export_records(small, ["Mom"], dict(f_, dest=os.path.join(tmp, "out2")))
             check(res2["pdf_path"] and os.path.exists(res2["pdf_path"]) and res2["pdf_sections"] == [],

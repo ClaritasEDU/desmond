@@ -593,7 +593,7 @@ function appendPage(){
     if(r.person!==lastPerson){ lastPerson=r.person; lastDay=null;
       const h=document.createElement("div"); h.className="person"; h.textContent=r.person; out.appendChild(h); }
     if(r.date!==lastDay){ lastDay=r.date;
-      const d=document.createElement("div"); d.className="day"; d.textContent=r.date; out.appendChild(d); }
+      const d=document.createElement("div"); d.className="day"; d.textContent=r.person+" · "+r.date; out.appendChild(d); }
     out.appendChild(msgRow(r));
   }
   shown=end; updateBar();
@@ -732,6 +732,33 @@ def start_export_job(payload):
 
     threading.Thread(target=run, daemon=True).start()
     return job
+
+
+def write_txt(path, records_by_person, people, summary, order):
+    """A plain, readable .txt transcript: one section per conversation, a
+    header per day, `HH:MM  Sender: text` lines, attachments as [photo: name].
+    Multi-line messages are indented so a message never looks like a new line."""
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("MESSAGES — " + ", ".join(str(p) for p in people) + "\n")
+        fh.write(summary + "\n")
+        fh.write("Order: " + ("newest first" if order == "newest" else "oldest first") + "\n")
+        for person, rows in records_by_person:
+            fh.write("\n" + "=" * 72 + "\n" + str(person) + "\n" + "=" * 72 + "\n")
+            last_day = None
+            for r in rows:
+                if r["date"] != last_day:
+                    fh.write("\n--- " + r["date"] + " ---\n")
+                    last_day = r["date"]
+                body = (r.get("text_plain") or "").strip()
+                if r.get("message_type") == "reaction" and not body:
+                    body = r.get("text", "")
+                body = body.replace("\n", "\n        ")
+                line = f"{r['time'][:5]}  {r['sender']}: {body}".rstrip()
+                fh.write(line + "\n")
+                for m in r.get("media") or []:
+                    tag = (f"[{m.get('category', 'file')}: {m.get('name', '')}"
+                           + (" — not downloaded from iCloud" if m.get("missing") else "") + "]")
+                    fh.write("        " + tag + "\n")
 
 
 PDF_PART_SIZE = 500        # messages per PDF part — small enough to render in seconds
@@ -913,6 +940,26 @@ def export_records(records, people, f, progress=None):
                    if m.get("category") == "photo" and not m.get("missing"))
     range_key = f.get("range", "range")
 
+    want_txt = (f.get("format") or "pdf") == "txt"
+    txt_path, txt_sections = None, []
+    if want_txt:
+        # Plain text: no browser, no parts — one file, plus one per conversation
+        # when several were picked. Order inside matches the chosen order.
+        if progress:
+            progress.update("pdf", label="Writing plain-text transcript")
+        by_conv_t = defaultdict(list)
+        for hr in html_records:
+            by_conv_t[hr["person"]].append(hr)
+        names_t = sorted(by_conv_t, key=lambda n: str(n))
+        txt_path = os.path.join(folder, f"{label}_{range_key}.txt")
+        write_txt(txt_path, [(n, by_conv_t[n]) for n in names_t], people, summary, order)
+        if len(names_t) > 1:
+            for i, n in enumerate(names_t, start=1):
+                sp = os.path.join(folder, f"{safe_name(n)}_{range_key}_{i:02d}.txt")
+                write_txt(sp, [(n, by_conv_t[n])], [n], summary, order)
+                txt_sections.append(sp)
+        print(f"Text transcript written: {txt_path}", flush=True)
+
     # 6a. PDFs in PARTS, rendered one at a time. Each conversation is its own
     #     section; a big conversation is split into parts of PDF_PART_SIZE
     #     messages. Headless Chrome laying out thousands of messages + photos as
@@ -929,23 +976,24 @@ def export_records(records, people, f, progress=None):
         n_parts = max(1, -(-len(recs_c) // PDF_PART_SIZE))
         for k in range(n_parts):
             units.append((name, k + 1, n_parts, recs_c[k * PDF_PART_SIZE:(k + 1) * PDF_PART_SIZE]))
-    split_needed = len(units) > 1
+    split_needed = len(units) > 1 and not want_txt
     if split_needed:
         sec_dir = os.path.join(folder, "sections")
         os.makedirs(sec_dir, exist_ok=True)
         for i, (name, part_no, part_total, recs_i) in enumerate(units, start=1):
             part_tag = f"_part{part_no}of{part_total}" if part_total > 1 else ""
-            stem = f"{i:02d}_{safe_name(name)}{part_tag}"
+            stem = f"{safe_name(name)}{part_tag}_{i:02d}"
             sec_html = os.path.join(sec_dir, stem + ".html")
             span = f"{recs_i[0]['date']} → {recs_i[-1]['date']}" if recs_i else ""
             sec_summary = (f"{len(recs_i):,} messages · {span}"
                            + (f" · part {part_no} of {part_total}" if part_total > 1 else ""))
+            title_name = f"{name} — part {part_no} of {part_total}" if part_total > 1 else str(name)
             with open(sec_html, "w", encoding="utf-8") as hf:
                 # Attachments live one level up from sections/ — point there.
                 hf.write(render_html(
                     [dict(r, media=[dict(m, path="../" + m["path"], display="../" + m.get("display", m["path"]))
                                     if not m.get("missing") else m for m in r["media"]])
-                     for r in recs_i], [name], sec_summary, order))
+                     for r in recs_i], [title_name], sec_summary, order))
             n_ph = sum(1 for r in recs_i for m in r["media"]
                        if m.get("category") == "photo" and not m.get("missing"))
             label_i = f"{name}" + (f" (part {part_no} of {part_total})" if part_total > 1 else "")
@@ -960,7 +1008,9 @@ def export_records(records, people, f, progress=None):
 
     # 6b. ONE combined PDF only when the whole export is small enough to render
     #     as a single page without hanging; otherwise the parts ARE the deliverable.
-    if len(records) > PDF_COMBINED_MAX:
+    if want_txt:
+        pdf_path, pdf_error = None, None
+    elif len(records) > PDF_COMBINED_MAX:
         pdf_path = None
         pdf_error = (f"{len(records):,} messages is too many for one PDF render — delivered as "
                      f"{len(units)} numbered PDFs instead (each is a conversation or a part of one).")
@@ -974,12 +1024,13 @@ def export_records(records, people, f, progress=None):
     try:
         # Open the PDF itself when we have one; otherwise the folder.
         first_part = next((sct["pdf"] for sct in pdf_sections if sct.get("pdf")), None)
-        subprocess.run(["open", pdf_path or first_part or folder], check=False)
+        subprocess.run(["open", txt_path or pdf_path or first_part or folder], check=False)
     except Exception:
         pass
 
     return {"ok": True, "count": len(records), "folder": folder,
             "pdf_path": pdf_path, "pdf_error": pdf_error, "pdf_sections": pdf_sections,
+            "txt_path": txt_path, "txt_sections": txt_sections, "format": "txt" if want_txt else "pdf",
             "drive_folder": drive_folder, "drive_error": drive_error,
             "first": first_date, "last": last_date,
             "attachments_saved": att_saved, "attachments_missing": att_missing,
@@ -1312,7 +1363,16 @@ PAGE = r"""<!DOCTYPE html>
   </div>
 
   <div class="card">
-    <h2>4 · Where to save</h2>
+    <h2>4 · Output</h2>
+    <div class="grid" id="formats">
+      <div class="opt on" data-f="pdf">📄 PDF — photos inline (needs Chrome/Edge)</div>
+      <div class="opt" data-f="txt">📝 Plain text (.txt) — instant, one file, no photos</div>
+    </div>
+    <div class="mut" id="fmthint" style="margin-top:8px">The PDF is rendered by a browser already on this Mac. Plain text writes a single readable .txt per export (and one per conversation if you picked several); photo/video files are still copied alongside.</div>
+  </div>
+
+  <div class="card">
+    <h2>5 · Where to save</h2>
     <label class="lbl">Local folder (always kept)</label>
     <input type="text" id="dest" value="__DEFAULT_DEST__">
     <div class="tg on" id="mirror" style="text-align:center;margin-top:12px">☁︎ Also copy to Google Drive</div>
@@ -1352,7 +1412,7 @@ PAGE = r"""<!DOCTYPE html>
 </div>
 
 <script>
-const state = { people: new Set(), range: "all", dir: "both", order: "oldest", redact: false, mirror: true, shown: [],
+const state = { people: new Set(), range: "all", dir: "both", order: "oldest", redact: false, mirror: true, format: "pdf", shown: [],
                 previewed: null };   // the exact filters the visible preview was built from
 
 function $(id){ return document.getElementById(id); }
@@ -1471,6 +1531,10 @@ $("redact").onclick = () => {
   invalidatePreview();
 };
 // ---- google drive mirror ----
+document.querySelectorAll("#formats .opt").forEach(el => el.onclick = () => {
+  document.querySelectorAll("#formats .opt").forEach(o => o.classList.remove("on"));
+  el.classList.add("on"); state.format = el.dataset.f; invalidatePreview();
+});
 $("mirror").onclick = () => {
   state.mirror = !state.mirror;
   $("mirror").classList.toggle("on", state.mirror);
@@ -1488,6 +1552,7 @@ function collect() {
     include: $("include").value, exclude: $("exclude").value,
     cap: $("cap").value, redact: state.redact,
     order: state.order, dest: $("dest").value, mirror_drive: state.mirror,
+    format: state.format,
   };
 }
 
@@ -1574,7 +1639,10 @@ $("save").onclick = () => {
       res.className = "result ok";
       const att = d.attachments_saved ? ` · <b>${Number(d.attachments_saved).toLocaleString()}</b> attachments` : "";
       const miss = d.attachments_missing ? ` (${Number(d.attachments_missing)} not downloaded from iCloud)` : "";
-      let where = d.pdf_path
+      let where = d.txt_path
+        ? `<br><br>📝 <b>Your text file</b> (everything in order) — it just opened: <code>${esc(d.txt_path)}</code>`
+          + ((d.txt_sections||[]).length ? `<br>One .txt per conversation too: ` + d.txt_sections.map(t => `<code>${esc(t.split("/").pop())}</code>`).join(", ") : "")
+        : d.pdf_path
         ? `<br><br>📄 <b>Your PDF</b> (everything in order, photos inline) — it just opened: <code>${esc(d.pdf_path)}</code>`
         : (d.pdf_sections && d.pdf_sections.length && (d.pdf_error||"").includes("too many")
             ? `<br><br>📄 <b>Your PDFs</b> are below — ${esc(d.pdf_error)}`
