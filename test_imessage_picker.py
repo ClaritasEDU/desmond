@@ -476,6 +476,9 @@ def main():
         finally:
             desmond_pdf.find_browser = orig
     check('d.pdf_path' in picker.PAGE and "Your PDF" in picker.PAGE, "result panel leads with the PDF")
+    check("pdf_sections" in picker.PAGE and "One PDF per conversation" in picker.PAGE,
+          "result panel lists the per-conversation PDFs")
+    check('html_path=sec_html' in open(picker.__file__).read(), "sections are rendered from their own HTML, one at a time")
 
     # One click selects every conversation matching the search (all threads with a person).
     check('id="pickshown"' in picker.PAGE and "lastShown.forEach(p => state.people.add(p.name))" in picker.PAGE,
