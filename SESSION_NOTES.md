@@ -9,6 +9,54 @@ This file contains a complete history of Claude Code sessions for this repositor
 
 ---
 
+## 2026-09-15 — Per-platform one-shot launchers (Mac + PC)
+
+### What We Built
+Two dummy-proof, double-clickable launchers that run the one-shot full export,
+one per platform, kept on a branch separate from `main`:
+
+- **`desmond_oneshot_mac.command`** — double-click in Finder → runs
+  `desmond_export.py` (whole history, text + media inline, local + Google Drive,
+  three-way verified). Handles missing `python3` with fix-it steps, keeps the
+  window open at the end, and prints the archive location.
+- **`desmond_oneshot_pc.bat`** — double-click in File Explorer → runs
+  `imessage_exporter_windows.py --full` (full history from an unencrypted iPhone
+  backup → Markdown + AI-ready JSON/CSV + SUMMARY). Checks for Python, explains
+  the backup/encryption requirement on failure.
+- **`ONESHOT.md`** — how to run each, plus the platform recommendation.
+
+### Technical Details
+- Both launchers `cd` to their own folder (no assumptions about where they're run).
+- Logging per Chris's standing preference: the Mac launcher tees console output to
+  `~/Downloads/Desmond_Logs/oneshot_mac_launcher_*.log` (raw, local-only) on top
+  of the app's own PII-safe `.log/.json`; the PC launcher tees via PowerShell
+  `Tee-Object` to `Documents\Desmond_Logs\oneshot_pc_*.log`.
+- No existing code touched — additive launchers only. `bash -n` passes on the
+  `.command`; both exporters still parse clean.
+
+### Current Status
+- ✅ Launchers written, syntax-checked. Not yet run on a real Mac/PC (container
+  has no Messages DB, no iPhone backup).
+
+### Branch Info
+- Branch `claude/gracious-albattani-w3qnky` (separate from `main`, as requested).
+
+### Decisions Made
+- Used `.command` (not `.sh`) for Mac so it's double-clickable in Finder.
+- Recommendation: **run it on the Mac** — live DB read, inline media, Drive
+  mirror + verify, and fewer failure modes than the PC backup path.
+
+### Next Steps
+1. Real run of `desmond_oneshot_mac.command` on Chris's Mac (grant Terminal Full
+   Disk Access first).
+2. Real run of `desmond_oneshot_pc.bat` after making an unencrypted iPhone backup.
+3. If happy, decide whether to fold these into `main`.
+
+### Questions/Blockers
+- None. Real-device verification needs Chris's machine.
+
+---
+
 ## 2026-07-29 — PersonalCRM bridge (`desmond_crm_export.py`)
 
 ### What We Built

@@ -17,7 +17,14 @@ ParentPoint/federation work is untouched. Text messages remain the default
 use case.
 
 ## What's Working
-- **⭐ PersonalCRM bridge (NEW)** (`desmond_crm_export.py`) — one command reads
+- **⭐ Per-platform one-shot launchers (NEW)** — `desmond_oneshot_mac.command`
+  (double-click in Finder → the full Mac export) and `desmond_oneshot_pc.bat`
+  (double-click → full Windows/iPhone-backup export). Both are dummy-proof
+  (self-locating, Python checks, plain-language errors) and log to
+  `Desmond_Logs/`. See `ONESHOT.md`. Recommendation: **run it on the Mac** (live
+  DB, inline media, Drive mirror + verify, fewer failure modes). Kept on a branch
+  separate from `main`.
+- **⭐ PersonalCRM bridge** (`desmond_crm_export.py`) — one command reads
   your texts from any source (this Mac's Messages, a plugged-in iPhone's local
   backup, a plugged-in Android over USB, or an existing export) and writes a
   single `personalcrm_import.json`. Then in PersonalCRM: Settings → Text Message
@@ -145,9 +152,13 @@ use case.
 - Calendar sign-in needs the one-time app registrations (free, ~10 min).
 
 ## Last Session
-- **Date:** 2026-07-29
-- **Branch:** `claude/project-status-assessment-pi7y12`
-- **Summary:** Added `desmond_crm_export.py`, a one-command bridge that reads
+- **Date:** 2026-09-15
+- **Branch:** `claude/gracious-albattani-w3qnky`
+- **Summary:** Added two dummy-proof one-shot launchers —
+  `desmond_oneshot_mac.command` and `desmond_oneshot_pc.bat` — plus `ONESHOT.md`
+  with a Mac-vs-PC recommendation (run it on the Mac). Additive launchers only;
+  no existing code touched. Kept separate from `main`.
+- **Previous session (2026-07-29):** Added `desmond_crm_export.py`, a one-command bridge that reads
   texts from any source (Mac Messages / iPhone backup / Android USB / an
   existing export) and writes a `personalcrm_import.json` the companion
   PersonalCRM app imports — turning mined messages (cell numbers already
