@@ -504,6 +504,20 @@ def main():
           "result panel lists the per-conversation PDFs")
     check('html_path=sec_html' in open(picker.__file__).read(), "sections are rendered from their own HTML, one at a time")
 
+    # Converted-preview cache is keyed on the source's identity, not just the ROWID.
+    with tempfile.TemporaryDirectory() as tmp:
+        src = os.path.join(tmp, "IMG.HEIC"); open(src, "wb").write(b"a" * 10)
+        n1 = picker._preview_cache_name(7, src)
+        check(n1.startswith("7_") and n1.endswith(".jpg"), "cache name carries the ROWID")
+        open(src, "wb").write(b"b" * 11)   # replaced original (size changed)
+        n2 = picker._preview_cache_name(7, src)
+        check(n1 != n2, "replacing the original changes the cache key (no stale preview)")
+        os.utime(src, (1, 1))              # same size, different mtime
+        n3 = picker._preview_cache_name(7, src)
+        check(n3 != n2, "a different mtime changes the cache key")
+        other = os.path.join(tmp, "OTHER.HEIC"); open(other, "wb").write(b"b" * 11); os.utime(other, (1, 1))
+        check(picker._preview_cache_name(7, other) != n3, "same ROWID reused for another file → different key")
+
     # Progress percent moves monotonically through the phases.
     pr = picker.Progress()
     pr.update("read"); a = pr.snapshot()["percent"]

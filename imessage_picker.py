@@ -966,6 +966,17 @@ _BROWSER_IMAGE_EXTS = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "ima
                        ".gif": "image/gif", ".webp": "image/webp"}
 
 
+def _preview_cache_name(att_id, src):
+    """Cache file name that changes whenever the SOURCE changes. Keyed on the
+    attachment ROWID alone, a restored chat.db that reuses an ID, or a
+    replaced original, would keep serving the old JPEG — a stale preview of
+    an unrelated photo. Path + size + mtime make the key follow the file."""
+    import hashlib
+    st = os.stat(src)
+    ident = f"{os.path.abspath(src)}|{st.st_size}|{int(st.st_mtime)}"
+    return f"{att_id}_{hashlib.sha1(ident.encode('utf-8')).hexdigest()[:12]}.jpg"
+
+
 def preview_photo_path(att_id):
     """(path, mime) of a browser-displayable file for a photo attachment, or
     (None, None). HEIC/TIFF are converted once with macOS `sips` into a small
@@ -994,7 +1005,7 @@ def preview_photo_path(att_id):
     if ext in WEB_CONVERT_EXTS:
         try:
             os.makedirs(_PREVIEW_CACHE, exist_ok=True)
-            out = os.path.join(_PREVIEW_CACHE, f"{att_id}.jpg")
+            out = os.path.join(_PREVIEW_CACHE, _preview_cache_name(att_id, src))
             if not os.path.isfile(out):
                 subprocess.run(["sips", "-s", "format", "jpeg", "-Z", "800", src, "--out", out],
                                check=True, capture_output=True)
