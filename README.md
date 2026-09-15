@@ -71,7 +71,13 @@ Exit codes (so the launcher and scripts can tell what happened): `0` complete ·
 complete (offloaded iCloud items or Drive still uploading — see
 `VERIFY_REPORT.md`) · `130` stopped with Control+C.
 
-**Want a PDF of a conversation?** Open its `conversation.html` and click
+**One person, one PDF:** double-click `desmond_picker.command`, tick the
+person, pick a range (All time is the default), Preview, **Save export**. It
+writes a single PDF of the whole conversation in order with photos inline,
+named `<Person>_<range>.pdf`, and opens it. (Needs Chrome, Edge or Chromium
+on the Mac; without one it tells you to use the button below instead.)
+
+**PDF of a conversation from the full archive:** open its `conversation.html` and click
 **🖨 Save as PDF** in the top bar. It shows every message, waits for the photos
 to load, then opens the Print window — choose **Save as PDF** (Safari: the PDF
 menu at the bottom-left of the print sheet; Chrome: Destination → Save as PDF).

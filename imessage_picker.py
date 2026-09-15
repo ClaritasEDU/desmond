@@ -818,17 +818,44 @@ def export_records(records, people, f):
                       in_local, in_drive, saved_media, missing_drive,
                       drive_error=drive_error)
 
+    # 6. ONE PDF of the whole thing, in order, photos inline — the thing most
+    #    people actually want to hand to someone. Rendered from the transcript
+    #    by a headless Chrome/Edge/Chromium already on the Mac; if none is
+    #    installed, the transcript's own "Save as PDF" button is the fallback.
+    pdf_path, pdf_error = make_pdf(folder, label, f.get("range", "range"))
+
     try:
-        subprocess.run(["open", folder], check=False)
+        # Open the PDF itself when we have one; otherwise the folder.
+        subprocess.run(["open", pdf_path or folder], check=False)
     except Exception:
         pass
 
     return {"ok": True, "count": len(records), "folder": folder,
+            "pdf_path": pdf_path, "pdf_error": pdf_error,
             "drive_folder": drive_folder, "drive_error": drive_error,
             "first": first_date, "last": last_date,
             "attachments_saved": att_saved, "attachments_missing": att_missing,
             "in_local": in_local, "in_drive": in_drive,
             "missing_drive": len(missing_drive)}
+
+
+def make_pdf(folder, label, range_key):
+    """Render <folder>/conversation.html to <folder>/<label>_<range>.pdf.
+    Returns (pdf_path, None) or (None, reason)."""
+    try:
+        import desmond_pdf
+    except ImportError:
+        return None, "desmond_pdf.py is missing next to imessage_picker.py."
+    browser = desmond_pdf.find_browser()
+    if not browser:
+        return None, ("No Chrome/Edge/Chromium on this Mac for automatic PDFs. Open "
+                      "conversation.html and click \u201cSave as PDF\u201d, or install Google Chrome.")
+    html = os.path.join(folder, "conversation.html")
+    pdf = os.path.join(folder, f"{label}_{range_key}.pdf")
+    err = desmond_pdf.convert(browser, html, pdf)
+    if err:
+        return None, f"PDF could not be rendered ({err}). Open conversation.html and click \u201cSave as PDF\u201d."
+    return pdf, None
 
 
 def write_pick_report(folder, drive_folder, people, summary, att_saved, att_missing,
@@ -1263,7 +1290,10 @@ $("save").onclick = () => {
       res.className = "result ok";
       const att = d.attachments_saved ? ` · <b>${Number(d.attachments_saved).toLocaleString()}</b> attachments` : "";
       const miss = d.attachments_missing ? ` (${Number(d.attachments_missing)} not downloaded from iCloud)` : "";
-      let where = `<br><br>Local: <code>${esc(d.folder)}</code>`;
+      let where = d.pdf_path
+        ? `<br><br>📄 <b>Your PDF</b> (everything in order, photos inline) — it just opened: <code>${esc(d.pdf_path)}</code>`
+        : `<br><br>⚠️ No automatic PDF: ${esc(d.pdf_error || "")}`;
+      where += `<br>Folder with the transcript + the original photo/video files: <code>${esc(d.folder)}</code>`;
       if (d.drive_folder) where += `<br>Google Drive: <code>${esc(d.drive_folder)}</code>`;
       if (d.drive_error) where += `<br>⚠️ Google Drive: ${esc(d.drive_error)}`;
       let vr = "";
@@ -1274,7 +1304,7 @@ $("save").onclick = () => {
       }
       res.innerHTML = `✅ Saved <b>${Number(d.count).toLocaleString()}</b> messages${att}${miss} (${esc(d.first)} → ${esc(d.last)}).`
         + where + vr
-        + `<br><br>Open <code>conversation.html</code> to read it with photos & videos inline (toggle newest/oldest at the top). See <code>VERIFY_REPORT.md</code> for the per-place check.`;
+        + `<br><br><code>conversation.html</code> in that folder is the same thing as a web page (videos play there; the PDF shows a caption for them). <code>VERIFY_REPORT.md</code> has the per-place check.`;
     } else { res.className = "result err"; res.innerHTML = "⚠️ " + esc(d.error || "Failed."); }
     res.scrollIntoView({behavior:"smooth"});
   }).catch(e => { btn.disabled=false; btn.textContent="Save export"; showErr(e); });
