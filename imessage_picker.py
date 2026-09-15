@@ -1007,6 +1007,14 @@ def preview_photo_path(att_id):
             os.makedirs(_PREVIEW_CACHE, exist_ok=True)
             out = os.path.join(_PREVIEW_CACHE, _preview_cache_name(att_id, src))
             if not os.path.isfile(out):
+                # Drop stale conversions of this attachment (a replaced original
+                # gets a new key; the old JPEG must not pile up).
+                for old in os.listdir(_PREVIEW_CACHE):
+                    if old.startswith(f"{att_id}_") and old.endswith(".jpg"):
+                        try:
+                            os.remove(os.path.join(_PREVIEW_CACHE, old))
+                        except OSError:
+                            pass
                 subprocess.run(["sips", "-s", "format", "jpeg", "-Z", "800", src, "--out", out],
                                check=True, capture_output=True)
             return out, "image/jpeg"
