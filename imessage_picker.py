@@ -76,9 +76,9 @@ REACTIONS = {
 }
 
 RANGE_LABELS = {
-    "1d": "Last 24 hours", "7d": "Last 7 days", "30d": "Last 30 days",
-    "90d": "Last 90 days", "365d": "Last year", "all": "All time",
-    "custom": "Custom range",
+    "1d": "Last 24 hours", "7d": "Last week", "30d": "Last month",
+    "90d": "Last 3 months", "180d": "Last 6 months", "365d": "Last year",
+    "all": "All time", "custom": "Custom range",
 }
 
 _contacts_loaded = False
@@ -167,7 +167,7 @@ def apple_from_date(date_str, end_of_day=False):
 
 
 def resolve_range(range_key, start=None, end=None):
-    days = {"1d": 1, "7d": 7, "30d": 30, "90d": 90, "365d": 365}
+    days = {"1d": 1, "7d": 7, "30d": 30, "90d": 90, "180d": 180, "365d": 365}
     if range_key in days:
         return apple_cutoff(days[range_key]), None
     if range_key == "custom":
@@ -359,7 +359,7 @@ def gather(f, progress=None):
     read can show signs of life (the one-shot prints a line per call)."""
     ensure_contacts()
     people = set(f.get("people") or [])
-    since, until = resolve_range(f.get("range", "7d"), f.get("start") or None, f.get("end") or None)
+    since, until = resolve_range(f.get("range", "all"), f.get("start") or None, f.get("end") or None)
     direction = f.get("direction", "both")
     # An explicit empty list means "nothing" (every content toggle off) —
     # only a MISSING key falls back to everything.
@@ -429,7 +429,7 @@ def safe_name(name):
 
 
 def filter_summary(f):
-    bits = [RANGE_LABELS.get(f.get("range", "7d"), f.get("range", ""))]
+    bits = [RANGE_LABELS.get(f.get("range", "all"), f.get("range", ""))]
     d = {"both": "both directions", "mine": "only my messages", "theirs": "only their messages"}
     bits.append(d.get(f.get("direction", "both"), ""))
     bits.append("includes: " + ", ".join(f.get("types") or []))
@@ -968,12 +968,12 @@ PAGE = r"""<!DOCTYPE html>
   <div class="card">
     <h2>2 · How far back</h2>
     <div class="grid" id="ranges">
-      <div class="opt" data-r="1d">Last 24 hours</div>
-      <div class="opt on" data-r="7d">Last 7 days</div>
-      <div class="opt" data-r="30d">Last 30 days</div>
-      <div class="opt" data-r="90d">Last 90 days</div>
-      <div class="opt" data-r="365d">Last year</div>
-      <div class="opt" data-r="all">All time</div>
+      <div class="opt on" data-r="all">All time</div>
+      <div class="opt" data-r="7d">1 week</div>
+      <div class="opt" data-r="30d">1 month</div>
+      <div class="opt" data-r="90d">3 months</div>
+      <div class="opt" data-r="180d">6 months</div>
+      <div class="opt" data-r="365d">1 year</div>
     </div>
     <div class="opt" data-r="custom" style="margin-top:9px">Custom date range</div>
     <div class="custom" id="custom">
@@ -1062,7 +1062,7 @@ PAGE = r"""<!DOCTYPE html>
 </div>
 
 <script>
-const state = { people: new Set(), range: "7d", dir: "both", order: "oldest", redact: false, mirror: true, shown: [],
+const state = { people: new Set(), range: "all", dir: "both", order: "oldest", redact: false, mirror: true, shown: [],
                 previewed: null };   // the exact filters the visible preview was built from
 
 function $(id){ return document.getElementById(id); }
