@@ -474,6 +474,11 @@ def main():
             desmond_pdf.find_browser = orig
     check('d.pdf_path' in picker.PAGE and "Your PDF" in picker.PAGE, "result panel leads with the PDF")
 
+    # One click selects every conversation matching the search (all threads with a person).
+    check('id="pickshown"' in picker.PAGE and "lastShown.forEach(p => state.people.add(p.name))" in picker.PAGE,
+          "Select all shown picks every matching conversation")
+    check('id="clearshown"' in picker.PAGE, "Clear all shown exists")
+
     # A full-page gate covers the controls until /api/people has answered.
     check('id="loading"' in picker.PAGE and "position:fixed; inset:0" in picker.PAGE,
           "page is gated by a full-screen loading overlay")

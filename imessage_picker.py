@@ -540,7 +540,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
    .wrap{max-width:none;padding:0;}
    .bar,.pdfhint{display:none!important;}
    h1{color:#111;} .sub,.day,.m .meta{color:#555;}
-   .person{color:#1a4f9c;border-top:1px solid #bbb;page-break-before:auto;}
+   .person{color:#1a4f9c;border-top:0;page-break-before:always;break-before:page;margin-top:0;padding-top:0;font-size:16px;}
+   .person:first-child{page-break-before:auto;break-before:auto;}
    .m{border-bottom:1px solid #e3e3e3;page-break-inside:avoid;break-inside:avoid;}
    .m .who{color:#1a4f9c;} .m.me .who{color:#1f7a4f;}
    img.att{max-width:300px;max-height:300px;border:1px solid #ccc;}
@@ -607,8 +608,14 @@ function updateBar(){
   if(remaining>0) more.textContent="Show next "+Math.min(PAGE_SIZE,remaining);
 }
 function reset(){
-  sorted=RECORDS.slice().sort((a,b)=> a.timestamp<b.timestamp?-1:(a.timestamp>b.timestamp?1:0));
-  if(order==="newest") sorted.reverse();
+  // Group by conversation first, then by time inside each — so an export of
+  // several threads reads as separate conversations, not one interleaved feed.
+  const byTime=(a,b)=> a.timestamp<b.timestamp?-1:(a.timestamp>b.timestamp?1:0);
+  sorted=RECORDS.slice().sort((a,b)=>{
+    const p=String(a.person).localeCompare(String(b.person));
+    if(p!==0) return p;
+    return order==="newest" ? byTime(b,a) : byTime(a,b);
+  });
   document.getElementById("out").innerHTML=""; shown=0; lastPerson=null; lastDay=null;
   appendPage();
 }
@@ -631,12 +638,13 @@ async function saveAsPdf(){
   window.print();
 }
 document.getElementById("pdf").onclick=saveAsPdf;
-// ?print=1 → build the full page and print automatically (used by desmond_pdf.py)
+reset();
+// ?print=1 → every message on the page, photos loaded, ready for headless
+// printing (desmond_pdf.py). MUST run after reset() has populated `sorted`.
 if(new URLSearchParams(location.search).get("print")==="1"){
   while(shown<sorted.length) appendPage();
   window.__desmondReady = waitForImages().then(()=>{ window.__desmondPrintReady=true; });
 }
-reset();
 </script></body></html>"""
 
 
@@ -1049,7 +1057,12 @@ PAGE = r"""<!DOCTYPE html>
 
   <div class="card">
     <h2>1 · Who</h2>
-    <input type="text" id="search" placeholder="Search conversations…" autocomplete="off">
+    <input type="text" id="search" placeholder="Search conversations… (a name, a number, a group)" autocomplete="off">
+    <div class="mut" style="margin:6px 0 8px">
+      <button class="linkbtn" id="pickshown">Select all shown</button> ·
+      <button class="linkbtn" id="clearshown">Clear all shown</button>
+      <span id="pickhint"></span>
+    </div>
     <div class="chips" id="chips"></div>
     <div id="plist"><div class="mut" style="padding:12px">Loading conversations…</div></div>
     <div class="mut" id="phint"></div>
@@ -1190,7 +1203,18 @@ function renderPeople(filter) {
     list.appendChild(row);
   });
   if (!shown.length) list.innerHTML = '<div class="mut" style="padding:12px">No matches.</div>';
+  lastShown = shown;
+  $("pickhint").textContent = q ? `(${shown.length} match "${filter}")` : `(${shown.length} shown)`;
 }
+let lastShown = [];
+$("pickshown").onclick = () => {
+  lastShown.forEach(p => state.people.add(p.name));
+  renderChips(); renderPeople($("search").value); invalidatePreview();
+};
+$("clearshown").onclick = () => {
+  lastShown.forEach(p => state.people.delete(p.name));
+  renderChips(); renderPeople($("search").value); invalidatePreview();
+};
 function renderChips() {
   const c = $("chips"); c.innerHTML = "";
   state.people.forEach(name => {
