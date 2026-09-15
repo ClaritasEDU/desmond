@@ -1,11 +1,146 @@
 # DESMOND - Session History
 
 **Repository:** `desmond`  
-**Total Sessions Logged:** 9  
-**Date Range:** 2025-01-25 to 2026-07-29  
-**Last Updated:** 2026-07-29 (PersonalCRM bridge)
+**Total Sessions Logged:** 11  
+**Date Range:** 2025-01-25 to 2026-09-15  
+**Last Updated:** 2026-09-15 (full code review + Mac fixes)
 
 This file contains a complete history of Claude Code sessions for this repository, automatically generated from transcript files. Sessions are listed in reverse chronological order (most recent first).
+
+---
+
+## 2026-09-15 (part 2) — Full code review: 55 findings, ~50 fixed (Mac first), PC planned
+
+### What We Built
+A thorough review of the whole app, Mac path first, then a fix + test pass.
+Five parallel review agents (exporter, attachment archiver, picker/sources/CRM,
+Mac shell launchers, PC path) each reproduced their findings before reporting;
+three fix agents plus the lead then fixed everything on the Mac path with a
+regression test per finding. PC work is **planned only** — see `ROADMAP.md`.
+
+**Headline bugs fixed (Mac)**
+1. **Unknown numbers renamed to their last 4 digits and MERGED** (critical, in
+   the exporter, picker, attachment archiver, and therefore the one-shot):
+   any 1:1 chat with a number not in Contacts was routed through the group-chat
+   path, which abbreviated unmatched handles to `name[-4:]` — so "+1 512 555
+   4567" and "+1 555 999 4567" landed in one "4567" folder typed "group", and
+   the recipient of "Me" messages was lost. New shared rule: a
+   `chat_identifier` not starting with `chat` is a direct chat named by the
+   full identifier (or contact); `get_chat_participants` never abbreviates.
+2. **Redaction toggle didn't scrub 3 of 4 files** (critical, picker): only
+   `messages.csv` was redacted; html/md/json (and their Drive mirrors) kept the
+   raw phone numbers/emails/SSNs. Fixed + tested on all four files.
+3. **One invalid-UTF-8 row aborted the whole export** (critical, exporter):
+   lenient `text_factory` on every chat.db / AddressBook connection.
+4. **Missing Full Disk Access reported as "no Messages database"** (the #1
+   real-world failure): every entry point now distinguishes `no_access` from
+   `missing`, prints the exact fix, opens the Full Disk Access pane, and exits
+   **3** so the launchers react. Verified as a non-root user.
+5. **`--photos-videos` could never verify complete** (one-shot): verify ran
+   without the type filter, so every skipped PDF/audio counted as missing and
+   `--retry` burned all passes.
+6. **Stored XSS in the picker via a group name** → could POST an export to any
+   path; plus no `Host` check (DNS rebinding could read `/api/people`), and
+   `<!--<script` in a message blanked `conversation.html`. All closed.
+7. **Drive mirror nested the archive inside itself** when `--dest` pointed into
+   Drive, growing one level per run; `.rtfd`/`.pages` bundle attachments
+   failed forever; long CJK names hit ENAMETOOLONG silently; a metadata-only
+   `copystat` failure deleted good copies on cloud volumes; verify said ✅ over
+   a truncated local file; Drive auto-detect returned the CloudStorage root on
+   non-English Macs; originals evicted by "Optimize Mac Storage" after
+   archiving were reported missing and reset the incremental state.
+8. **Exporter**: old state files doubled `messages.json`; messages in two
+   chats exported twice (exporter, picker, archiver — all three); U+FFFC
+   placeholders leaked into text and mis-typed attachment messages; Sequoia
+   emoji tapbacks (2006/3006) and stickers (1000) exported as text; corrupt
+   `.export_state.json` crashed every run; long names crashed mid-write
+   (partial output, state not saved); multi-line texts became headings;
+   `attributedBody` 0x82 (4-byte) lengths decoded as garbage; case-only
+   name collisions on APFS overwrote each other; files opened without UTF-8.
+9. **Launchers**: the `.sh` files were documented as "double-click" but
+   Finder opens `.sh` in a text editor — renamed to `.command`; every
+   launcher now finds a REAL Python 3 (Apple's `/usr/bin/python3` stub pops a
+   dialog until Command Line Tools exist; Finder-launched scripts have a
+   minimal PATH) via the new shared `desmond_find_python.sh`; live progress
+   (`PYTHONUNBUFFERED`) so the window doesn't sit silent for an hour; Ctrl+C
+   handled (trap + `tee -i`, log keeps the last lines, exit 130); keeps the
+   Mac awake (`caffeinate`); honest exit codes (0 done / 1 error / 3 FDA /
+   4 built-but-incomplete incl. offloaded iCloud items / 130 stopped) with a
+   matching message for each instead of "give Terminal Full Disk Access" for
+   everything; `setup_imessage_exporter.sh` no longer starts two full exports
+   at once and puts the same Python it runs under launchd into the FDA
+   instructions; `desmond.sh` accepts `346,000`, selects the iMessage pane
+   before clicking Sync Now, and stops with the Automation/Accessibility fix
+   instead of 12 minutes of fake "stalls".
+10. Picker: port 8765 busy → tries 8766–8785; Save now exports what was
+    previewed (not the live form); Drive-copy failure no longer fails an export
+    whose local files are already written; `types: []` no longer exports
+    everything. CRM bridge: `--out DIR` works, atomic write. sqlite URIs are
+    percent-encoded (a `chat copy #2.db` path silently opened nothing).
+    Picker classifies NULL-MIME HEIC/MOV/CAF by extension + UTI (were
+    "file" → skipped by `--photos-videos`, rendered as links).
+
+### Technical Details
+- Files: `imessage_exporter.py` (+`resolve_conversation`, `safe_dir_name`,
+  `classify_reaction`, `clean_text`, `escape_markdown_lines`,
+  `merge_message_records`, `check_messages_db_access`), `imessage_attachments.py`
+  (+`_copy_file`/`_copy_tree`/`_path_size`, `_my_drive_in`, `categorize(...,
+  uti)`, `_select_with_optional_uti`, `error_count`), `imessage_picker.py`
+  (+`json_for_script`, `_host_ok`, `bind_server`, `state.previewed`),
+  `desmond_sources.py` (+`messages_db_state`, `FDA_FIX_MESSAGE`,
+  `detect_available()["mac_messages_needs_full_disk_access"]`),
+  `desmond_export.py` (+`messages_db_status`, `_is_done`, exit codes, manifest
+  `size_bytes`, verify `types`), `desmond_crm_export.py`, all Mac shell files,
+  new `desmond_find_python.sh`, new `ROADMAP.md`.
+- Behaviour change to know about: conversations with numbers not in Contacts
+  are now named by the **full number** (folders like `_15125554567` instead of
+  `4567`). Existing exports keep their old folders; a `--full` run rebuilds.
+- Tests: 13 suites, **495 passing assertions** (was ~170); ~130 new
+  regression tests, each tied to a finding. `python3 -m pyflakes` clean on
+  every Mac-path module. End-to-end one-shot run against a realistic synthetic
+  chat.db (unknown numbers, group chat, NULL-MIME HEIC, attributedBody-only
+  text, double chat join, emoji tapback) with a fake Google Drive: complete
+  verify, correct names, no U+FFFC, PII-safe log with no home path or names.
+  Launcher paths (Python missing, FDA missing as user `nobody`, exit 4, Ctrl+C)
+  exercised in the container with stubs.
+- Not verified here (needs Chris's Mac): the real Full Disk Access dialog
+  flow, `caffeinate`, `sips` HEIC→JPG, the `open x-apple.systempreferences:`
+  deep link, Gatekeeper on the `.command`, and real Drive for desktop.
+
+### Current Status
+- ✅ All 13 suites pass; e2e one-shot on synthetic data passes.
+- ✅ Docs updated line by line: README (easiest path, permissions incl.
+  Automation, exit codes, file table, `.command` names, Drive `--dest` note,
+  verify `--drive`), ONESHOT.md ("if it won't open", what the end of the run
+  means), index.html (step 2 permissions, step 4 double-click), ROADMAP.md (new).
+- 🚧 PC path: reviewed and planned only (P1–P20 in `ROADMAP.md`); no PC code
+  changed. Known PC issues remain (launcher says DONE on failure, Store-stub
+  Python, no attributedBody decode, encrypted backups undetected).
+- ❌ Nothing known broken on the Mac path.
+
+### Branch Info
+- Branch `claude/charming-newton-k8s1b8` (from `main` at 4cef7a3).
+- Ready to merge: yes, once Chris has done one real run on the Mac.
+
+### Decisions Made
+- Renamed `desmond_export.sh`/`_attachments.sh`/`_verify.sh`/`_picker.sh` →
+  `.command` (double-click works; docs were wrong before). `desmond.sh`,
+  `setup_imessage_exporter.sh`, `android_export.sh` stay Terminal scripts.
+- One-shot exit 4 also fires when items are still offloaded in iCloud —
+  "DONE" now means everything is archived, not just everything downloadable.
+- `--retry` documented as "up to 3 passes" (what it does), not "until match".
+- Prioritised Mac; PC deferred to the roadmap per Chris's instruction.
+
+### Next Steps
+1. Real run on the Mac: `cd ~/desmond` → double-click
+   `desmond_oneshot_mac.command`; send back `~/Downloads/Desmond_Logs/*.json`.
+2. If happy, merge to `main` (online) and delete the branch.
+3. PC Phase 0 from `ROADMAP.md` (½ day) if a PC-only household needs it.
+
+### Questions/Blockers
+- HEIC on Windows (originals-only vs optional Pillow) — decision for Chris
+  before PC Phase 2.
+- None blocking on the Mac.
 
 ---
 

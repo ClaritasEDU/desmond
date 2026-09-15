@@ -32,9 +32,14 @@ The guide will ask about your phone and computer, then show you exactly what to 
 
 ## ⭐ Easiest: one command (full archive, text + media inline)
 
-On a Mac, this single command exports your **whole** message history — text **and**
-the real photos/videos — into one browsable archive, saved **locally and on Google
-Drive**, then **verified**:
+On a Mac, **double-click `desmond_oneshot_mac.command`** in the `~/desmond`
+folder (see `ONESHOT.md`). It exports your **whole** message history — text
+**and** the real photos/videos — into one browsable archive, saved **locally and
+on Google Drive**, then **verified**. It finds a working Python for you, checks
+Full Disk Access up front (and opens the right Settings pane if it's missing),
+keeps the Mac awake, and writes a log to `~/Downloads/Desmond_Logs/`.
+
+The same thing from Terminal:
 
 ```bash
 cd ~/desmond
@@ -42,8 +47,8 @@ python3 desmond_export.py
 ```
 
 Open the `index.html` it creates, click a conversation, and read the entire thread
-with **photos and videos inline, in date/time order**. (Or double-click
-`desmond_export.sh`.)
+with **photos and videos inline, in date/time order**. (`desmond_export.command`
+is the bare double-clickable equivalent of the Terminal command.)
 
 ```
 Desmond_Message_Archive/
@@ -58,8 +63,13 @@ Desmond_Message_Archive/
 
 Useful flags: `--photos-videos` (images/videos only), `--newest` (newest first),
 `--no-drive` (local only), `--drive "PATH"` (choose the Drive folder), `--retry`
-(loop until local & Drive match). It reads Messages **read-only** and never
-deletes anything; re-runs are incremental.
+(re-run up to 3 passes until local & Drive match; `--retry N` for more). It reads
+Messages **read-only** and never deletes anything; re-runs are incremental.
+
+Exit codes (so the launcher and scripts can tell what happened): `0` complete ·
+`1` error · `3` Terminal needs Full Disk Access · `4` archive built but not yet
+complete (offloaded iCloud items or Drive still uploading — see
+`VERIFY_REPORT.md`) · `130` stopped with Control+C.
 
 Each transcript shows **100 messages at a time** ("Show next 100" / "Show all")
 and the conversation list pages the same way, so even a huge history opens
@@ -141,13 +151,20 @@ Every message includes:
 
 - macOS with Messages app
 - Messages in iCloud enabled (on both iPhone and Mac)
-- Python 3 (pre-installed on macOS)
+- Python 3 — the launchers find one for you (Homebrew, python.org, or Apple's
+  Command Line Tools). On a brand-new Mac, `/usr/bin/python3` is only a stub
+  until you run `xcode-select --install` once; the launchers detect that and
+  tell you.
 
 ### 1. Grant Terminal Permissions
 
 Open **System Settings > Privacy & Security** and add Terminal to:
-- **Full Disk Access** (required)
-- **Accessibility** (for sync automation)
+- **Full Disk Access** (required — the one-shot launcher checks this first and
+  opens the pane for you if it's missing; **quit Terminal with Cmd+Q** after
+  turning it on, or the change doesn't take)
+- **Accessibility** (only for `desmond.sh` sync automation)
+- **Automation → Terminal → System Events and Messages** (only for `desmond.sh`;
+  macOS asks the first time it runs — click Allow)
 
 For **Contacts** access, run this in Terminal to trigger the permission prompt:
 
@@ -170,16 +187,16 @@ Desmond will click Sync Now every 15 seconds and show your progress:
 
 ```
 [15:44:08] ====== STARTING ======
-[15:44:08] Messages on Mac: 142,847
+[15:44:08] Messages on Mac: 142847
 [15:44:08] Conversations: 89
 [15:44:08] ========================
 
-[15:44:23] Push #2 - +312 new messages (total: 143,159)
-[15:44:38] Push #3 - +287 new messages (total: 143,446)
+[15:44:23] Push #2 - +312 new messages (total: 143159)
+[15:44:38] Push #3 - +287 new messages (total: 143446)
 ...
 
 [15:52:53] ====== SYNC APPEARS COMPLETE ======
-[15:52:53] Final count: 346,476 messages
+[15:52:53] Final count: 346476 messages
 [15:52:53] "See you in another life, brother."
 ```
 
@@ -239,7 +256,9 @@ python3 imessage_attachments.py --full --no-drive         # local copy only
 python3 imessage_attachments.py --full --drive "/Users/you/Library/CloudStorage/GoogleDrive-…/My Drive"
 ```
 
-Or just double-click `desmond_attachments.sh`.
+Or just double-click `desmond_attachments.command`. (Google Drive is auto-detected;
+don't point `--dest` *inside* your Drive folder — the archive would be uploaded
+twice, and the tool now refuses to mirror a folder into itself.)
 
 **What you get (in both the local folder and Google Drive):**
 
@@ -277,7 +296,8 @@ Confirm every attachment exists in all **three** places — what Messages knows
 about (the device), the local archive, and Google Drive:
 
 ```bash
-python3 imessage_attachments.py --verify      # or double-click desmond_verify.sh
+python3 imessage_attachments.py --verify      # or double-click desmond_verify.command
+python3 imessage_attachments.py --verify --drive "/path/to/My Drive/Desmond_Message_Attachments"
 ```
 
 It prints per-place counts and writes a **report** (`VERIFY_REPORT.md` +
@@ -291,7 +311,7 @@ ON GOOGLE DRIVE:           12,419 / 12,419  ✅
 ```
 
 To close any gap, re-run the backup (it re-copies what's missing and re-mirrors),
-or use `--retry` to loop until complete. Items still **offloaded in iCloud** must
+or use `--retry` to loop up to 3 passes. Items still **offloaded in iCloud** must
 be downloaded in Messages first. Exit code is non-zero until everything matches,
 so it's scriptable.
 
@@ -819,21 +839,25 @@ Then in PersonalCRM: **Settings → "Text Message Import (Desmond)"** → upload
 ### macOS (iMessage)
 | File | Purpose |
 |------|---------|
+| `desmond_oneshot_mac.command` | **⭐ Double-click this** — the full one-shot export with Python + Full Disk Access checks, keep-awake, and a launcher log |
 | `desmond_export.py` | **One-shot full export** — text + media inline, local + Drive, verified |
-| `desmond_export.sh` | Easy launcher for the one-shot full export |
+| `desmond_export.command` | Bare double-clickable launcher for `desmond_export.py` |
+| `desmond_find_python.sh` | Shared helper: finds a real Python 3 (skips Apple's stub); sourced by every launcher |
 | `desmond_log.py` | Writes the PII-safe run log to `~/Downloads/Desmond_Logs/` |
 | `desmond.sh` | Automates iCloud Messages sync |
 | `imessage_exporter.py` | Exports message text from Mac |
 | `imessage_attachments.py` | Archives the actual photos/videos/files (Google Drive-ready); `--verify` checks completeness |
-| `desmond_attachments.sh` | Easy launcher for the attachment archiver |
-| `desmond_verify.sh` | Verifies all attachments are in the Drive archive |
+| `desmond_attachments.command` | Easy launcher for the attachment archiver |
+| `desmond_verify.command` | Three-way verify: device vs local archive vs Google Drive |
 | `imessage_picker.py` | Browser UI to pick/preview/export specific conversations |
+| `desmond_picker.command` | Double-clickable launcher for the picker |
 | `setup_imessage_exporter.sh` | Sets up hourly automatic exports |
 
 ### Windows (iPhone)
 | File | Purpose |
 |------|---------|
 | `imessage_exporter_windows.py` | Exports messages from iPhone backup |
+| `desmond_oneshot_pc.bat` | Double-click one-shot (text export from an unencrypted iPhone backup) — see `ONESHOT.md` |
 | `desmond_windows.bat` | Easy launcher (double-click to run) |
 | `setup_windows.bat` | Sets up hourly automatic exports |
 
