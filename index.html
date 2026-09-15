@@ -522,8 +522,9 @@ cd desmond</code>
                 <div class="step-content">
                     <p>Open <strong>System Settings → Privacy & Security</strong> and add Terminal to:</p>
                     <ul>
-                        <li><strong>Full Disk Access</strong> (required)</li>
-                        <li><strong>Accessibility</strong> (for sync automation)</li>
+                        <li><strong>Full Disk Access</strong> (required — then <strong>quit Terminal with Cmd+Q</strong> so it takes effect; the one-shot launcher checks this and opens the pane for you)</li>
+                        <li><strong>Accessibility</strong> (only for <code>desmond.sh</code> sync automation)</li>
+                        <li><strong>Automation → Terminal → System Events &amp; Messages</strong> (only for <code>desmond.sh</code>; macOS asks the first time — click Allow)</li>
                     </ul>
                     <p>For Contacts access, run this command:</p>
                     <div class="code-block">
@@ -556,10 +557,12 @@ cd desmond</code>
                     <div class="step-title">Export Everything — one command</div>
                 </div>
                 <div class="step-content">
-                    <p>This single command exports your <strong>whole history — text and the real photos/videos</strong> — into one browsable archive, saved <strong>locally and on Google Drive</strong>, then verifies it:</p>
+                    <p>Easiest: in Finder, open the <code>desmond</code> folder and <strong>double-click <code>desmond_oneshot_mac.command</code></strong>. It exports your <strong>whole history — text and the real photos/videos</strong> — into one browsable archive, saved <strong>locally and on Google Drive</strong>, then verifies it. (If macOS says it can't verify the file: System Settings → Privacy &amp; Security → scroll down → <strong>Open Anyway</strong>.)</p>
+                    <p>Or the same thing from Terminal:</p>
                     <div class="code-block">
                         <button class="copy-btn" onclick="copyCode(this)">Copy</button>
-                        <code>python3 desmond_export.py</code>
+                        <code>cd ~/desmond
+python3 desmond_export.py</code>
                     </div>
                     <p>Open the <code>index.html</code> it creates, click a conversation, and read the whole thread with <strong>photos &amp; videos inline, in date order</strong>.</p>
                     <p style="color:var(--text-secondary);font-size:.95em">Options: <code>--photos-videos</code>, <code>--newest</code>, <code>--no-drive</code>, <code>--retry</code>. Saved to <code>~/Downloads/Desmond_Message_Archive/</code> (and mirrored to Google Drive).</p>

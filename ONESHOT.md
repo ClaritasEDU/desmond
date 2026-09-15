@@ -7,12 +7,45 @@ file for your machine. Both keep a log so problems are easy to diagnose.
 
 1. Open the `~/desmond` folder in Finder.
 2. Double-click **`desmond_oneshot_mac.command`**.
-   - First time only: if macOS blocks it, right-click the file > Open > Open.
-3. When it finishes, open `~/Downloads/Desmond_Message_Archive/index.html`.
+   - It finds a working Python 3 for you, checks that Terminal has Full Disk
+     Access (and opens that Settings pane if not), keeps the Mac awake while it
+     runs, and shows progress live.
+3. When it finishes, it opens the archive; it lives in
+   `~/Downloads/Desmond_Message_Archive/index.html`.
+
+### If it won't open (first time only)
+
+- **"Apple could not verify…" / "cannot be opened"** (a downloaded copy is
+  quarantined): System Settings > Privacy & Security > scroll down > **Open
+  Anyway**. On older macOS, right-click the file > Open > Open.
+- **Terminal opens and says "permission denied"** (a downloaded copy lost its
+  run bit). In Terminal, paste:
+
+  ```bash
+  cd ~/desmond && chmod +x desmond_oneshot_mac.command && xattr -d com.apple.quarantine desmond_oneshot_mac.command
+  ```
+
+- **"Terminal needs Full Disk Access"**: turn on Terminal in the Settings pane
+  it opened, then **quit Terminal completely (Cmd+Q)** and double-click again.
+- **"a working Python 3 was not found"**: in Terminal run
+  `xcode-select --install`, wait for it to finish, then double-click again.
+
+### What the end of the run means
+
+- **DONE** — complete: everything on the device is in the local archive and on
+  Google Drive.
+- **Archive BUILT, but not yet complete** — the archive is usable, but some
+  items are still offloaded in iCloud or Google Drive hasn't finished
+  uploading. `VERIFY_REPORT.md` in the archive folder lists exactly what.
+  Download the offloaded items in Messages, then run again (add `--retry` to
+  loop up to 3 passes).
+- **Stopped by you (Control+C)** — nothing is damaged; run again to rebuild
+  (already-copied attachments are reused).
 
 What you get: your WHOLE history, text plus the real photos and videos shown
 inline in date order, saved locally AND mirrored to Google Drive, then verified
-(device vs local vs Drive). Reads Messages read-only.
+(device vs local vs Drive). Reads Messages read-only. Conversations with numbers
+that aren't in your Contacts are named by the full number (never merged).
 
 Logs: the app writes a PII-safe, shareable log to `~/Downloads/Desmond_Logs/`
 (counts, timings, errors — no message text or names). The launcher also writes a

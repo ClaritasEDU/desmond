@@ -9,8 +9,13 @@ echo "  iMessage Exporter Setup"
 echo "=================================="
 echo ""
 
-# Get the current username
-USERNAME=$(whoami)
+# Where this setup script (and imessage_exporter.py) live — works from any cwd
+SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Find a REAL Python 3 (skips Apple's "install developer tools?" stub). launchd
+# will run THIS interpreter, so it is also the binary that needs Full Disk Access.
+. "$SRC_DIR/desmond_find_python.sh" || exit 1
+PY_REAL="$(readlink -f "$PY" 2>/dev/null || echo "$PY")"
 
 # Define paths
 SCRIPT_DIR="$HOME"
@@ -26,13 +31,13 @@ echo ""
 
 echo "Step 2: Installing the exporter script..."
 # The Python script should already be in the same directory as this setup script
-if [ -f "./imessage_exporter.py" ]; then
-    cp ./imessage_exporter.py "$SCRIPT_PATH"
+if [ -f "$SRC_DIR/imessage_exporter.py" ]; then
+    cp "$SRC_DIR/imessage_exporter.py" "$SCRIPT_PATH"
     chmod +x "$SCRIPT_PATH"
     echo "✓ Installed: $SCRIPT_PATH"
 else
-    echo "✗ Error: imessage_exporter.py not found in current directory"
-    echo "  Make sure both files are in the same folder"
+    echo "✗ Error: imessage_exporter.py not found next to this setup script"
+    echo "  Make sure both files are in the same folder ($SRC_DIR)"
     exit 1
 fi
 echo ""
@@ -51,7 +56,7 @@ cat > "$PLIST_PATH" << EOF
     
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/python3</string>
+        <string>$PY</string>
         <string>$SCRIPT_PATH</string>
     </array>
     
@@ -59,7 +64,7 @@ cat > "$PLIST_PATH" << EOF
     <integer>3600</integer>
     
     <key>RunAtLoad</key>
-    <true/>
+    <false/>
     
     <key>StandardOutPath</key>
     <string>/tmp/imessage_exporter.log</string>
@@ -73,16 +78,24 @@ EOF
 echo "✓ Created scheduler: $PLIST_PATH"
 echo ""
 
-echo "Step 4: Loading the scheduler..."
-launchctl unload "$PLIST_PATH" 2>/dev/null
-launchctl load "$PLIST_PATH"
-echo "✓ Scheduler loaded (runs every hour)"
-echo ""
-
-echo "Step 5: Running initial full export..."
+echo "Step 4: Running initial full export..."
 echo "(This may take a while if you have lots of messages)"
 echo ""
-python3 "$SCRIPT_PATH" --full
+if ! "$PY" "$SCRIPT_PATH" --full; then
+    echo ""
+    echo "✗ The initial export failed. The hourly scheduler was NOT installed."
+    echo "  Most common cause: Terminal lacks Full Disk Access —"
+    echo "  System Settings > Privacy & Security > Full Disk Access > add Terminal,"
+    echo "  quit Terminal, then run this setup again."
+    exit 1
+fi
+echo ""
+
+echo "Step 5: Loading the hourly scheduler (after the first export, so the two"
+echo "        never run at the same time)..."
+launchctl bootout "gui/$(id -u)" "$PLIST_PATH" 2>/dev/null
+launchctl bootstrap "gui/$(id -u)" "$PLIST_PATH" || launchctl load "$PLIST_PATH"
+echo "✓ Scheduler loaded (runs every hour)"
 echo ""
 
 echo "=================================="
@@ -98,8 +111,9 @@ echo "IMPORTANT — permissions (macOS grants these per app):"
 echo "  1. Open System Settings > Privacy & Security > Full Disk Access"
 echo "  2. Add Terminal (or iTerm) — this covers manual runs"
 echo "  3. ALSO add python3 for the HOURLY runs: press Cmd+Shift+G in the"
-echo "     file picker and add the file this prints:"
-echo "       $(readlink -f "$(command -v python3)" 2>/dev/null || command -v python3)"
+echo "     file picker and add the file this prints (the SAME interpreter the"
+echo "     scheduler runs):"
+echo "       $PY_REAL"
 echo "     (launchd runs python3 directly, so Terminal's access does NOT"
 echo "      carry over — without this the hourly export can't read Messages)"
 echo "  4. Restart Terminal"
@@ -110,5 +124,5 @@ echo "Useful commands:"
 echo "  • Run manually:  python3 ~/imessage_exporter.py"
 echo "  • Full re-export: python3 ~/imessage_exporter.py --full"
 echo "  • Check logs:     cat /tmp/imessage_exporter.log"
-echo "  • Stop auto-run:  launchctl unload ~/Library/LaunchAgents/$PLIST_NAME"
+echo "  • Stop auto-run:  launchctl bootout gui/\$(id -u) ~/Library/LaunchAgents/$PLIST_NAME"
 echo ""

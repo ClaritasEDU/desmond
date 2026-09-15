@@ -12,14 +12,8 @@ echo ""
 # Get the directory of this script
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# Check if Python is available
-if ! command -v python3 &> /dev/null; then
-    echo "ERROR: Python 3 is not installed."
-    echo ""
-    echo "On macOS, Python 3 should be pre-installed."
-    echo "If not, install it via Homebrew: brew install python3"
-    exit 1
-fi
+# Find a real Python 3 (skips Apple's "install developer tools?" stub)
+. "$SCRIPT_DIR/desmond_find_python.sh" || exit 1
 
 # Run the exporter
-python3 "$SCRIPT_DIR/android_sms_exporter.py" "$@"
+"$PY" "$SCRIPT_DIR/android_sms_exporter.py" "$@"
