@@ -500,7 +500,39 @@ def main():
         finally:
             desmond_pdf.find_browser = orig
     check('d.pdf_path' in picker.PAGE and "Your PDF" in picker.PAGE, "result panel leads with the PDF")
-    check("pdf_sections" in picker.PAGE and "One PDF per conversation" in picker.PAGE,
+
+    # Big conversations are split into numbered PDF parts; the single giant
+    # render is skipped above PDF_COMBINED_MAX (that render is what hung).
+    import desmond_pdf as _dp
+    with tempfile.TemporaryDirectory() as tmp:
+        fake = os.path.join(tmp, "fake-chrome")
+        with open(fake, "w") as f:
+            f.write("#!/bin/bash\nfor a in \"$@\"; do case \"$a\" in --print-to-pdf=*) printf '%%PDF-1.4 fake' > \"${a#--print-to-pdf=}\";; esac; done\n")
+        os.chmod(fake, os.stat(fake).st_mode | _stat.S_IEXEC)
+        orig = _dp.find_browser
+        _dp.find_browser = lambda explicit=None: fake
+        try:
+            big = [{"id": i, "person": "Mom", "timestamp": f"2024-01-01T00:{i % 60:02d}:{i % 60:02d}",
+                    "date": "2024-01-01", "time": "00:00:00", "sender": "Mom", "is_from_me": False,
+                    "message_type": "text", "text": f"m{i}", "text_plain": f"m{i}",
+                    "has_attachment": False, "attachment_types": [], "attachments": [], "reaction": None}
+                   for i in range(picker.PDF_COMBINED_MAX + 1)]
+            f_ = {"types": ["text"], "range": "all", "order": "oldest", "mirror_drive": False,
+                  "dest": os.path.join(tmp, "out")}
+            res = picker.export_records(big, ["Mom"], f_)
+            n_parts = -(-len(big) // picker.PDF_PART_SIZE)
+            check(res["ok"] and len(res["pdf_sections"]) == n_parts, f"huge conversation split into {n_parts} PDF parts")
+            check(res["pdf_path"] is None and "too many" in (res["pdf_error"] or ""), "single giant render skipped with an explanation")
+            check(all(sct["pdf"] and os.path.exists(sct["pdf"]) for sct in res["pdf_sections"]), "every part PDF written")
+            check(sum(sct["messages"] for sct in res["pdf_sections"]) == len(big), "parts cover every message")
+            check([sct["part"] for sct in res["pdf_sections"]] == list(range(1, n_parts + 1)), "parts are numbered in order")
+            small = big[:50]
+            res2 = picker.export_records(small, ["Mom"], dict(f_, dest=os.path.join(tmp, "out2")))
+            check(res2["pdf_path"] and os.path.exists(res2["pdf_path"]) and res2["pdf_sections"] == [],
+                  "a small single conversation still gets one combined PDF and no parts")
+        finally:
+            _dp.find_browser = orig
+    check("pdf_sections" in picker.PAGE and "one per conversation" in picker.PAGE,
           "result panel lists the per-conversation PDFs")
     check('html_path=sec_html' in open(picker.__file__).read(), "sections are rendered from their own HTML, one at a time")
 
