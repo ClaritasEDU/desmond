@@ -76,9 +76,9 @@ REACTIONS = {
 }
 
 RANGE_LABELS = {
-    "1d": "Last 24 hours", "7d": "Last 7 days", "30d": "Last 30 days",
-    "90d": "Last 90 days", "365d": "Last year", "all": "All time",
-    "custom": "Custom range",
+    "1d": "Last 24 hours", "7d": "Last week", "30d": "Last month",
+    "90d": "Last 3 months", "180d": "Last 6 months", "365d": "Last year",
+    "all": "All time", "custom": "Custom range",
 }
 
 _contacts_loaded = False
@@ -167,7 +167,7 @@ def apple_from_date(date_str, end_of_day=False):
 
 
 def resolve_range(range_key, start=None, end=None):
-    days = {"1d": 1, "7d": 7, "30d": 30, "90d": 90, "365d": 365}
+    days = {"1d": 1, "7d": 7, "30d": 30, "90d": 90, "180d": 180, "365d": 365}
     if range_key in days:
         return apple_cutoff(days[range_key]), None
     if range_key == "custom":
@@ -968,12 +968,12 @@ PAGE = r"""<!DOCTYPE html>
   <div class="card">
     <h2>2 · How far back</h2>
     <div class="grid" id="ranges">
-      <div class="opt" data-r="1d">Last 24 hours</div>
-      <div class="opt" data-r="7d">Last 7 days</div>
-      <div class="opt" data-r="30d">Last 30 days</div>
-      <div class="opt" data-r="90d">Last 90 days</div>
-      <div class="opt" data-r="365d">Last year</div>
       <div class="opt on" data-r="all">All time</div>
+      <div class="opt" data-r="7d">1 week</div>
+      <div class="opt" data-r="30d">1 month</div>
+      <div class="opt" data-r="90d">3 months</div>
+      <div class="opt" data-r="180d">6 months</div>
+      <div class="opt" data-r="365d">1 year</div>
     </div>
     <div class="opt" data-r="custom" style="margin-top:9px">Custom date range</div>
     <div class="custom" id="custom">

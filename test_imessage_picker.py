@@ -430,6 +430,13 @@ def main():
     check('class="opt on" data-r="all"' in picker.PAGE, "date range defaults to All time in the UI")
     check('range: "all"' in picker.PAGE, "page state defaults to All time")
     check(picker.filter_summary({}).startswith("All time"), "server-side default range is All time")
+    for key in ("7d", "30d", "90d", "180d", "365d"):
+        check(f'data-r="{key}"' in picker.PAGE, f"range chooser {key} present in the UI")
+        since, until = picker.resolve_range(key, None, None)
+        check(since is not None, f"range {key} resolves to a start time")
+    s180, _ = picker.resolve_range("180d", None, None)
+    s90, _ = picker.resolve_range("90d", None, None)
+    check(s180 < s90, "6 months starts earlier than 3 months")
 
     print()
     if failures:
