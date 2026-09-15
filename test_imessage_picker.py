@@ -426,6 +426,13 @@ def main():
             picker.MESSAGES_DB, picker.PORT = saved_db, saved_port
             picker._conv_name_cache.clear()
 
+    # A full-page gate covers the controls until /api/people has answered.
+    check('id="loading"' in picker.PAGE and "position:fixed; inset:0" in picker.PAGE,
+          "page is gated by a full-screen loading overlay")
+    check('$("loading").style.display = "none"' in picker.PAGE, "overlay is removed only after the list loads")
+    check('id="retry"' in picker.PAGE and "Full Disk Access" in picker.PAGE, "load failure shows the fix and a retry button")
+    check(picker.PAGE.index('id="loading"') < picker.PAGE.index('id="search"'), "overlay is the first thing in the body")
+
     # The picker defaults to the whole history, not the last 7 days.
     check('class="opt on" data-r="all"' in picker.PAGE, "date range defaults to All time in the UI")
     check('range: "all"' in picker.PAGE, "page state defaults to All time")
