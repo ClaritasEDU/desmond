@@ -71,6 +71,21 @@ Exit codes (so the launcher and scripts can tell what happened): `0` complete ·
 complete (offloaded iCloud items or Drive still uploading — see
 `VERIFY_REPORT.md`) · `130` stopped with Control+C.
 
+**Want a PDF of a conversation?** Open its `conversation.html` and click
+**🖨 Save as PDF** in the top bar. It shows every message, waits for the photos
+to load, then opens the Print window — choose **Save as PDF** (Safari: the PDF
+menu at the bottom-left of the print sheet; Chrome: Destination → Save as PDF).
+Photos stay inline; videos and audio print as a caption. To make PDFs for
+**every** conversation at once, double-click `desmond_pdf.command` (uses
+Chrome/Edge/Chromium already on the Mac, headless; writes `conversation.pdf`
+next to each `conversation.html`):
+
+```bash
+cd ~/desmond
+python3 desmond_pdf.py            # all conversations
+python3 desmond_pdf.py "Mom"      # only folders whose name contains Mom
+```
+
 Each transcript shows **100 messages at a time** ("Show next 100" / "Show all")
 and the conversation list pages the same way, so even a huge history opens
 instantly instead of crashing the browser.
@@ -843,6 +858,7 @@ Then in PersonalCRM: **Settings → "Text Message Import (Desmond)"** → upload
 | `desmond_export.py` | **One-shot full export** — text + media inline, local + Drive, verified |
 | `desmond_export.command` | Bare double-clickable launcher for `desmond_export.py` |
 | `desmond_find_python.sh` | Shared helper: finds a real Python 3 (skips Apple's stub); sourced by every launcher |
+| `desmond_pdf.py` / `desmond_pdf.command` | Save every conversation as a PDF (photos inline) via headless Chrome/Edge; the transcript page also has a Save-as-PDF button |
 | `desmond_log.py` | Writes the PII-safe run log to `~/Downloads/Desmond_Logs/` |
 | `desmond.sh` | Automates iCloud Messages sync |
 | `imessage_exporter.py` | Exports message text from Mac |

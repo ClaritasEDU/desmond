@@ -527,11 +527,28 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
  .m{padding:7px 0;border-bottom:1px solid #181b22;}
  .m .meta{color:#9aa3b2;font-size:11.5px;margin-bottom:2px;}
  .m .who{color:#4f8cff;font-weight:600;} .m.me .who{color:#2e9d6f;}
- .m .txt{white-space:pre-wrap;}
+ .m .txt{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;}
  .m.react .txt{color:#9aa3b2;font-style:italic;}
  img.att{display:block;margin:6px 0;max-width:340px;max-height:340px;border-radius:10px;border:1px solid #2a2f3a;}
  video.att,audio.att{display:block;margin:6px 0;width:340px;max-width:100%;}
  .miss{color:#d6a;} a.file{color:#4f8cff;}
+ .pdfhint{display:none;color:#9aa3b2;font-size:12.5px;}
+ /* PDF / print: white page, every message shown, photos kept inline, no
+    message split across pages. Videos/audio can't print — show a caption. */
+ @media print{
+   body{background:#fff;color:#111;font-size:11.5px;line-height:1.45;}
+   .wrap{max-width:none;padding:0;}
+   .bar,.pdfhint{display:none!important;}
+   h1{color:#111;} .sub,.day,.m .meta{color:#555;}
+   .person{color:#1a4f9c;border-top:1px solid #bbb;page-break-before:auto;}
+   .m{border-bottom:1px solid #e3e3e3;page-break-inside:avoid;break-inside:avoid;}
+   .m .who{color:#1a4f9c;} .m.me .who{color:#1f7a4f;}
+   img.att{max-width:300px;max-height:300px;border:1px solid #ccc;}
+   video.att,audio.att{display:none;}
+   .printcap{display:block;color:#555;font-style:italic;}
+   a{color:inherit;text-decoration:none;}
+ }
+ .printcap{display:none;}
 </style></head><body><div class="wrap">
 <h1>__TITLE__</h1>
 <p class="sub">__SUMMARY__</p>
@@ -539,8 +556,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <button id="toggle">↕ Order: <b id="ord"></b></button>
   <button id="more">Show next 100</button>
   <button id="all">Show all</button>
+  <button id="pdf" title="Shows every message, then opens Print — choose 'Save as PDF'">🖨 Save as PDF</button>
   <span class="sub" id="count" style="margin:0"></span>
 </div>
+<p class="pdfhint" id="pdfhint">Preparing every message and photo for printing… the Print window opens when they're loaded. In it, pick <b>Save as PDF</b> (Safari: the PDF menu at the bottom-left; Chrome: Destination → Save as PDF).</p>
 <div id="out"></div>
 </div>
 <script>
@@ -553,8 +572,8 @@ function media(m){
   if(m.missing) return '<div class="miss">['+esc(m.category)+' — not downloaded from iCloud]</div>';
   const p=esc(m.path), d=esc(m.display||m.path);
   if(m.category==="photo") return '<a href="'+p+'" target="_blank"><img class="att" loading="lazy" src="'+d+'"></a>';
-  if(m.category==="video") return '<video class="att" controls preload="metadata" src="'+p+'"></video>';
-  if(m.category==="audio") return '<audio class="att" controls src="'+p+'"></audio>';
+  if(m.category==="video") return '<video class="att" controls preload="metadata" src="'+p+'"></video><span class="printcap">[video: '+esc(m.name)+']</span>';
+  if(m.category==="audio") return '<audio class="att" controls src="'+p+'"></audio><span class="printcap">[audio: '+esc(m.name)+']</span>';
   return '<a class="file" href="'+p+'" target="_blank">📎 '+esc(m.name)+'</a>';
 }
 function msgRow(r){
@@ -596,6 +615,27 @@ function reset(){
 document.getElementById("toggle").onclick=()=>{ order=(order==="newest"?"oldest":"newest"); reset(); };
 document.getElementById("more").onclick=()=>appendPage();
 document.getElementById("all").onclick=()=>{ while(shown<sorted.length) appendPage(); };
+function waitForImages(){
+  // lazy-loaded photos must be fetched before print, or the PDF has blank boxes
+  const imgs=[...document.querySelectorAll("img.att")];
+  imgs.forEach(i=>{ i.loading="eager"; });
+  return Promise.all(imgs.map(i=> (i.complete ? Promise.resolve() :
+    new Promise(res=>{ i.onload=res; i.onerror=res; }))));
+}
+async function saveAsPdf(){
+  const hint=document.getElementById("pdfhint"); hint.style.display="block";
+  while(shown<sorted.length) appendPage();
+  await waitForImages();
+  await new Promise(r=>setTimeout(r,300));
+  hint.style.display="none";
+  window.print();
+}
+document.getElementById("pdf").onclick=saveAsPdf;
+// ?print=1 → build the full page and print automatically (used by desmond_pdf.py)
+if(new URLSearchParams(location.search).get("print")==="1"){
+  while(shown<sorted.length) appendPage();
+  window.__desmondReady = waitForImages().then(()=>{ window.__desmondPrintReady=true; });
+}
 reset();
 </script></body></html>"""
 

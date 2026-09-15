@@ -1,11 +1,63 @@
 # DESMOND - Session History
 
 **Repository:** `desmond`  
-**Total Sessions Logged:** 11  
+**Total Sessions Logged:** 12  
 **Date Range:** 2025-01-25 to 2026-09-15  
 **Last Updated:** 2026-09-15 (full code review + Mac fixes)
 
 This file contains a complete history of Claude Code sessions for this repository, automatically generated from transcript files. Sessions are listed in reverse chronological order (most recent first).
+
+---
+
+## 2026-09-15 (part 3) — First real Mac run, progress lines, PDF export
+
+### What We Built
+- **First real run on Chris's Mac** started via `desmond_oneshot_mac.command`:
+  found Homebrew Python 3.14, Full Disk Access passed, 1,156 contacts loaded.
+  The window then sat silent during the database read, which prompted:
+- **Progress lines** — `imessage_picker.gather(progress=…)` callback every
+  5,000 rows; `desmond_export.py` prints "Reading messages… N read, N kept"
+  and "Conversation i of N · N attachments copied".
+- **PDF export with photos inline** (requested after clicking into a thread):
+  - `🖨 Save as PDF` button in every `conversation.html`: shows all messages,
+    forces lazy images to load, then `window.print()`; print stylesheet gives
+    a white page, keeps photos inline (max 300px), replaces video/audio with
+    a caption, and prevents a message splitting across pages. `?print=1`
+    auto-renders for headless use.
+  - `desmond_pdf.py` + `desmond_pdf.command`: batch-converts every
+    conversation (or name substrings) using headless Chrome / Chromium / Edge /
+    Brave / Arc found on the Mac; writes `conversation.pdf` beside each html;
+    skips existing unless `--force`; clear exit codes (1 failures/no archive,
+    2 no browser → points at the in-page button).
+  - Fixed while testing: long unbroken text ran off the page edge
+    (`overflow-wrap:anywhere` on `.txt`, screen and print).
+- `test_desmond_pdf.py` (14th suite): template checks, discovery, browser
+  detection, command flags, conversion with a stub browser, failure paths.
+  Real PDFs also generated with the container's Chromium and inspected
+  (photo embedded, layout correct).
+
+### Current Status
+- ✅ 14 suites pass; pyflakes clean.
+- 🚧 Chris's first real one-shot run was in progress at session end.
+
+### Branch Info
+- `claude/charming-newton-k8s1b8`, rebased on main after part 2 merged.
+  Ready to merge: yes.
+
+### Decisions Made
+- Browser print is the PDF engine (zero dependencies, best fidelity for
+  inline images); no Python PDF library added. Batch mode leans on a Chromium
+  browser already installed rather than bundling one.
+
+### Next Steps
+1. Merge to main online; `cd ~/desmond && git pull origin main`.
+2. After the one-shot finishes: open a conversation, click Save as PDF, check
+   the result; then `desmond_pdf.command` for the batch.
+3. Report the first-run log (`~/Downloads/Desmond_Logs/*.json`).
+
+### Questions/Blockers
+- Safari's print sheet hides "Save as PDF" in a PDF menu bottom-left — noted
+  in the README; if that trips Chris up, add a screenshot to ONESHOT.md.
 
 ---
 

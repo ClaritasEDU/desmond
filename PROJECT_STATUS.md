@@ -11,7 +11,7 @@ archiving with three-way verify, federation, consolidate mode, family
 federation, the no-files web wizard, the PersonalCRM bridge, and per-platform
 one-shot launchers. **This session (2026-09-15, part 2): a full code review of
 the whole app, Mac first** — 55 verified findings, ~50 fixed on the Mac path
-with a regression test each (495 passing assertions across 13 suites), the PC
+with a regression test each (about 520 passing assertions across 14 suites), the PC
 improvements planned in `ROADMAP.md`. Recommendation unchanged: **run it on the
 Mac.**
 
@@ -24,6 +24,14 @@ Mac.**
   live, keeps the Mac awake, survives Ctrl+C, and reports honest exit codes
   (0 done · 1 error · 3 needs Full Disk Access · 4 built but incomplete /
   offloaded iCloud items · 130 stopped). `ONESHOT.md` explains each.
+- **⭐ PDF export (new, 2026-09-15 part 3)** — every `conversation.html` has a
+  **🖨 Save as PDF** button (shows all messages, preloads photos, opens Print →
+  Save as PDF; photos inline, videos/audio as captions, no message split across
+  pages). `desmond_pdf.command` / `desmond_pdf.py` batch-converts every
+  conversation with headless Chrome/Edge/Chromium. Verified by rendering real
+  PDFs in the container.
+- **Progress lines (new)** — the one-shot prints "Reading messages… N read" and
+  "Conversation i of N" during the two long silent phases.
 - **Conversation naming is correct** — unknown numbers keep their full
   identifier and type "direct" everywhere (exporter, picker, archiver, one-shot);
   they were previously collapsed to their last 4 digits and merged.
@@ -92,9 +100,12 @@ Mac.**
 - Real-device verification (container has no Messages DB, phones, or GUI).
 
 ## Last Session
-- **Date:** 2026-09-15 (part 2)
-- **Branch:** `claude/charming-newton-k8s1b8`
-- **Summary:** Full code review (five parallel reviewers, every finding
+- **Date:** 2026-09-15 (part 3)
+- **Branch:** `claude/charming-newton-k8s1b8` (part 2 already merged to main)
+- **Summary (part 3):** first real Mac run started (Python + contacts + Full
+  Disk Access all passed); added progress lines for the silent read/copy
+  phases and a PDF export (Save-as-PDF button + `desmond_pdf.py` batch).
+- **Summary (part 2):** Full code review (five parallel reviewers, every finding
   reproduced), then ~50 Mac-path fixes with regression tests, launcher
   hardening, docs updated line by line, and `ROADMAP.md` with the ordered PC
   plan. Details in SESSION_NOTES.
