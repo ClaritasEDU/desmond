@@ -24,7 +24,12 @@ Mac.**
   live, keeps the Mac awake, survives Ctrl+C, and reports honest exit codes
   (0 done · 1 error · 3 needs Full Disk Access · 4 built but incomplete /
   offloaded iCloud items · 130 stopped). `ONESHOT.md` explains each.
-- **⭐ PDF export (new, 2026-09-15 part 3)** — every `conversation.html` has a
+- **⭐ Picker → one PDF (2026-09-15 part 4)** — Save export writes a single
+  `<Person>_<range>.pdf` (all messages, grouped per conversation with a page
+  break between threads, photos inline) and opens it. Preview shows the real
+  photos. "Select all shown" picks every thread matching a search. Fixed the
+  first-100-messages-only PDF bug.
+- **⭐ PDF export (2026-09-15 part 3)** — every `conversation.html` has a
   **🖨 Save as PDF** button (shows all messages, preloads photos, opens Print →
   Save as PDF; photos inline, videos/audio as captions, no message split across
   pages). `desmond_pdf.command` / `desmond_pdf.py` batch-converts every
