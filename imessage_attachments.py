@@ -58,6 +58,7 @@ import glob
 import json
 import mimetypes
 import os
+import re
 import shutil
 import sqlite3
 import sys
@@ -85,20 +86,54 @@ def human_size(num_bytes):
         num /= 1024
 
 
+# Localized names of the personal "My Drive" folder inside a Google Drive
+# mount, and of the two special siblings we must never archive into.
+_MY_DRIVE_NAMES = ("My Drive", "Mon Drive", "Mi unidad", "Meine Ablage",
+                   "Il mio Drive", "Meu Drive", "Mijn Drive", "マイドライブ",
+                   "내 드라이브", "我的云端硬盘", "我的雲端硬碟")
+_NOT_MY_DRIVE_NAMES = ("Shared drives", "Drive partagés", "Unidades compartidas",
+                       "Geteilte Ablagen", "Drive condivisi",
+                       "Drives compartilhados", "Gedeelde drives",
+                       "Other computers", "Autres ordinateurs",
+                       "Otros ordenadores", "Andere Computer", "Altri computer",
+                       "Outros computadores", "Andere computers")
+
+
+def _my_drive_in(mount_root):
+    """Pick the personal-drive subfolder inside a Drive mount root. Never the
+    root itself: the CloudStorage mount is a virtual folder whose only real
+    children are "My Drive" (localized on non-English Macs) and the shared
+    trees — writing at the root fails or lands in the wrong place."""
+    try:
+        names = sorted(n for n in os.listdir(mount_root)
+                       if os.path.isdir(os.path.join(mount_root, n)))
+    except OSError:
+        return None
+    for n in _MY_DRIVE_NAMES:
+        if n in names:
+            return os.path.join(mount_root, n)
+    for n in names:
+        if n.startswith(".") or n in _NOT_MY_DRIVE_NAMES:
+            continue
+        return os.path.join(mount_root, n)
+    return None
+
+
 def find_google_drive_dir():
-    """Best-effort detection of a 'Google Drive for desktop' folder on macOS."""
-    candidates = []
+    """Best-effort detection of a 'Google Drive for desktop' folder on macOS.
+    Deterministic (sorted) across several accounts, and always returns the
+    personal-drive folder — never the bare GoogleDrive-<account> mount root."""
     # Modern client mounts under ~/Library/CloudStorage/GoogleDrive-<account>/
-    candidates += glob.glob(
-        os.path.expanduser("~/Library/CloudStorage/GoogleDrive-*/My Drive")
-    )
-    candidates += glob.glob(
-        os.path.expanduser("~/Library/CloudStorage/GoogleDrive-*")
-    )
+    for root in sorted(glob.glob(
+            os.path.expanduser("~/Library/CloudStorage/GoogleDrive-*"))):
+        if not os.path.isdir(root):
+            continue
+        found = _my_drive_in(root)
+        if found:
+            return found
     # Older client used ~/Google Drive/
-    candidates.append(os.path.expanduser("~/Google Drive/My Drive"))
-    candidates.append(os.path.expanduser("~/Google Drive"))
-    for path in candidates:
+    for path in (os.path.expanduser("~/Google Drive/My Drive"),
+                 os.path.expanduser("~/Google Drive")):
         if os.path.isdir(path):
             return path
     return None
@@ -120,12 +155,87 @@ def drive_archive_dir(drive_dir=None):
     return os.path.join(drive, ARCHIVE_FOLDER_NAME) if drive else None
 
 
+def _path_size(path):
+    """Byte size of a file, or the total of every file under a directory
+    bundle (.rtfd/.pages/.key/.numbers attachments are folders on disk)."""
+    if os.path.isdir(path):
+        total = 0
+        for root, _dirs, files in os.walk(path):
+            for name in files:
+                try:
+                    total += os.path.getsize(os.path.join(root, name))
+                except OSError:
+                    pass
+        return total
+    return os.path.getsize(path)
+
+
+def _copy_file(src, dest):
+    """Copy the DATA, confirm the byte count, then copy metadata on a
+    best-effort basis. copy2() bundles the two, so a chmod/utime EPERM on a
+    cloud (File Provider) or SMB volume used to look like a failed copy and
+    threw away a perfectly good file."""
+    shutil.copyfile(src, dest)
+    want, got = os.path.getsize(src), os.path.getsize(dest)
+    if want != got:
+        raise OSError(f"short copy: wrote {got} of {want} bytes")
+    try:
+        shutil.copystat(src, dest)
+    except OSError:
+        pass   # metadata only — the bytes are safely in place
+
+
+def _copy_tree(src, dest):
+    """Copy a directory bundle file-by-file with _copy_file (data verified,
+    metadata best-effort). Overwrites files already present."""
+    if os.path.exists(dest) and not os.path.isdir(dest):
+        os.remove(dest)
+    for root, _dirs, files in os.walk(src):
+        rel = os.path.relpath(root, src)
+        target_root = dest if rel == "." else os.path.join(dest, rel)
+        os.makedirs(target_root, exist_ok=True)
+        for name in files:
+            _copy_file(os.path.join(root, name), os.path.join(target_root, name))
+    try:
+        shutil.copystat(src, dest)
+    except OSError:
+        pass
+
+
+def _copy_path(src, dest):
+    """Copy a file or a directory bundle to dest (same name)."""
+    if os.path.isdir(src):
+        _copy_tree(src, dest)
+    else:
+        _copy_file(src, dest)
+
+
+def _remove_path(path):
+    try:
+        if os.path.isdir(path) and not os.path.islink(path):
+            shutil.rmtree(path, ignore_errors=True)
+        elif os.path.lexists(path):
+            os.remove(path)
+    except OSError:
+        pass
+
+
 def mirror_tree(src_dir, dest_dir, errors=None):
     """Incrementally copy src_dir → dest_dir (skip files already present with the
     same size). Returns the number of files newly copied/updated. A failed copy
-    is rolled back (no partial file left behind) and reported via `errors`."""
+    is rolled back (no partial file left behind) and reported via `errors`.
+
+    If dest_dir IS src_dir nothing happens, and a dest_dir that lives INSIDE
+    src_dir is pruned from the walk — otherwise every pass would nest another
+    copy of the archive inside itself."""
+    src_abs = os.path.abspath(src_dir)
+    dest_abs = os.path.abspath(dest_dir)
+    if src_abs == dest_abs:
+        return 0
     copied = 0
-    for root, _dirs, files in os.walk(src_dir):
+    for root, dirs, files in os.walk(src_dir):
+        dirs[:] = [d for d in dirs
+                   if os.path.abspath(os.path.join(root, d)) != dest_abs]
         rel = os.path.relpath(root, src_dir)
         target_root = dest_dir if rel == "." else os.path.join(dest_dir, rel)
         os.makedirs(target_root, exist_ok=True)
@@ -135,16 +245,12 @@ def mirror_tree(src_dir, dest_dir, errors=None):
             try:
                 if os.path.exists(d) and os.path.getsize(d) == os.path.getsize(s):
                     continue
-                shutil.copy2(s, d)
+                _copy_file(s, d)
                 copied += 1
             except Exception as e:
                 # A partial file would look complete to an existence check —
                 # remove it so verify sees the truth and a re-run re-copies it.
-                try:
-                    if os.path.exists(d):
-                        os.remove(d)
-                except OSError:
-                    pass
+                _remove_path(d)
                 if errors is not None:
                     errors.append({"file": s, "error": str(e)})
     return copied
@@ -164,13 +270,20 @@ def mirror_to_drive(src_dir, drive_dir=None):
     places. Returns the Drive destination, or None if there's no Drive folder."""
     if not os.path.isdir(src_dir):
         return None
-    dest = drive_archive_dir(drive_dir)
+    drive = drive_dir or find_google_drive_dir()
+    dest = drive_archive_dir(drive)
     if not dest:
         print("\nNo Google Drive folder detected — attachments are saved locally:")
         print(f"  {src_dir}")
         print("Install 'Google Drive for desktop' (or pass --drive PATH) to also "
               "copy them to Drive.")
         return None
+    if _is_inside(src_dir, drive) or _is_inside(dest, src_dir):
+        # --dest already points into Drive (or the mirror target would sit
+        # inside the archive) — copying would nest the archive inside itself.
+        print("\nArchive already lives in Google Drive — nothing to mirror:")
+        print(f"  {src_dir}")
+        return src_dir
     errors = []
     n = mirror_tree(src_dir, dest, errors=errors)
     if errors:
@@ -204,28 +317,63 @@ def decode_attributed_body(data):
         return None
 
 
-def categorize(mime_type, name=None):
-    """Categorize by MIME type, falling back to the filename's extension —
-    a real chat.db has rows whose mime_type is NULL but whose name/uti make
-    the type obvious (those are still photos/videos to a human)."""
-    if not mime_type and name:
-        mime_type = mimetypes.guess_type(str(name))[0]
-    if not mime_type:
+# Apple-flavoured extensions the platform mimetypes table often lacks
+# (.caf/.amr voice memos come through as "file" otherwise).
+_EXT_CATEGORY = {
+    ".heic": "photo", ".heif": "photo",
+    ".caf": "audio", ".amr": "audio",
+    ".mov": "video", ".m4v": "video",
+}
+_UTI_CATEGORY = {
+    "public.heic": "photo", "public.heif": "photo",
+    "public.jpeg": "photo", "public.png": "photo",
+    "com.apple.quicktime-movie": "video", "public.mpeg-4": "video",
+    "public.movie": "video",
+    "com.apple.coreaudio-format": "audio", "public.audio": "audio",
+}
+
+
+def categorize(mime_type, name=None, uti=None):
+    """Categorize by MIME type, falling back to the filename's extension and
+    the attachment's UTI — a real chat.db has rows whose mime_type is NULL but
+    whose name/uti make the type obvious (those are still photos/videos to a
+    human). Positional (mime_type, name) is kept for imessage_picker."""
+    if mime_type:
+        m = str(mime_type).lower()
+        if m.startswith("image"):
+            return "photo"
+        if m.startswith("video"):
+            return "video"
+        if m.startswith("audio"):
+            return "audio"
         return "file"
-    if mime_type.startswith("image"):
-        return "photo"
-    if mime_type.startswith("video"):
-        return "video"
-    if mime_type.startswith("audio"):
-        return "audio"
+    if name:
+        ext = os.path.splitext(str(name))[1].lower()
+        if ext in _EXT_CATEGORY:
+            return _EXT_CATEGORY[ext]
+    if uti and str(uti).lower() in _UTI_CATEGORY:
+        return _UTI_CATEGORY[str(uti).lower()]
+    if name:
+        guessed = mimetypes.guess_type(str(name))[0]
+        if guessed:
+            return categorize(guessed)
     return "file"
+
+
+def _truncate_bytes(text, max_bytes):
+    """Cut a string so its UTF-8 encoding fits in max_bytes without splitting
+    a character (filesystems cap names at 255 BYTES, not characters)."""
+    if len(text.encode("utf-8")) <= max_bytes:
+        return text
+    encoded = text.encode("utf-8")[:max_bytes]
+    return encoded.decode("utf-8", errors="ignore")
 
 
 def safe_name(name):
     cleaned = "".join(
         c if c.isalnum() or c in (" ", "-", "_", "(", ")") else "_" for c in str(name)
     ).strip()
-    return (cleaned or "Unknown")[:60]
+    return _truncate_bytes((cleaned or "Unknown")[:60], 200)
 
 
 def ensure_contacts():
@@ -235,8 +383,15 @@ def ensure_contacts():
         _contacts_loaded = True
 
 
+def _ro_uri(db_path):
+    """sqlite read-only URI for a path — percent-encoded so '#', '?', '%' or
+    spaces in the path (a copied "chat copy #2.db") can't truncate the URI."""
+    from urllib.parse import quote
+    return "file:" + quote(os.path.abspath(os.path.expanduser(db_path))) + "?mode=ro"
+
+
 def open_db(db_path):
-    return sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    return sqlite3.connect(_ro_uri(db_path), uri=True)
 
 
 def conversation_name(handle_id, chat_id, display_name, cursor):
@@ -244,11 +399,13 @@ def conversation_name(handle_id, chat_id, display_name, cursor):
     if display_name:
         return display_name
     if chat_id:
-        name = core.lookup_contact_name(chat_id)
-        if name == chat_id or str(name).startswith("chat"):
-            participants = core.get_chat_participants(chat_id, cursor)
-            return participants or chat_id
-        return name
+        # Shared naming rule: only identifiers starting with "chat" are group
+        # chats. Anything else (a phone number / email) is a direct chat and
+        # is named by contact lookup — never abbreviated to its last 4 digits.
+        if not str(chat_id).startswith("chat"):
+            return core.lookup_contact_name(chat_id)
+        participants = core.get_chat_participants(chat_id, cursor)
+        return participants or chat_id
     if handle_id:
         return core.get_contact_name(handle_id, cursor)
     return "Unknown"
@@ -272,14 +429,29 @@ def save_state(state_file, state):
     _atomic_json_dump(state, state_file)
 
 
+def _select_with_optional_uti(cursor, sql_template, params=()):
+    """Run a query whose SELECT list contains `{uti}`. Older chat.db schemas
+    have no attachment.uti column, so fall back to NULL when it's missing."""
+    try:
+        cursor.execute(sql_template.format(uti="attachment.uti"), params)
+    except sqlite3.OperationalError:
+        cursor.execute(sql_template.format(uti="NULL"), params)
+    return cursor.fetchall()
+
+
 def iter_attachment_rows(cursor, since_rowid):
-    cursor.execute(
+    """One row per attachment (14 columns, `uti` last). A message that belongs
+    to two chats appears twice in chat_message_join; without dedupe the same
+    file was archived twice under two conversation folders. Deterministic:
+    the lowest chat ROWID wins."""
+    rows = _select_with_optional_uti(
+        cursor,
         """
         SELECT attachment.ROWID, attachment.filename, attachment.mime_type,
                attachment.transfer_name, attachment.total_bytes,
                message.ROWID, message.date, message.is_from_me,
                message.handle_id, message.text, message.attributedBody,
-               chat.chat_identifier, chat.display_name
+               chat.chat_identifier, chat.display_name, {uti}
         FROM attachment
         JOIN message_attachment_join
           ON attachment.ROWID = message_attachment_join.attachment_id
@@ -290,11 +462,18 @@ def iter_attachment_rows(cursor, since_rowid):
         LEFT JOIN chat
           ON chat_message_join.chat_id = chat.ROWID
         WHERE attachment.ROWID > ?
-        ORDER BY attachment.ROWID ASC
+        ORDER BY attachment.ROWID ASC, chat.ROWID ASC
         """,
         (since_rowid,),
     )
-    return cursor.fetchall()
+    seen = set()
+    unique = []
+    for row in rows:
+        if row[0] in seen:
+            continue
+        seen.add(row[0])
+        unique.append(row)
+    return unique
 
 
 def archive_attachments(
@@ -350,6 +529,7 @@ def archive_attachments(
     copied_count = 0
     copied_bytes = 0
     skipped_existing = 0
+    errors = []
     max_rowid = since
     # The incremental state may only advance past rows that are fully settled
     # (copied or already archived). A row that was filtered out, offloaded in
@@ -368,11 +548,11 @@ def archive_attachments(
     for row in rows:
         (att_id, filename, mime_type, transfer_name, total_bytes,
          msg_id, date, is_from_me, handle_id, text, attributed,
-         chat_id, display_name) = row
+         chat_id, display_name, uti) = row
 
         max_rowid = max(max_rowid, att_id)
 
-        category = categorize(mime_type, transfer_name or filename)
+        category = categorize(mime_type, transfer_name or filename, uti)
         if types and category not in types:
             unresolved(att_id)   # a later unfiltered run still needs this row
             continue
@@ -407,7 +587,7 @@ def archive_attachments(
         size = None
         if exists:
             try:
-                size = os.path.getsize(src)
+                size = _path_size(src)   # a bundle (.rtfd/.pages) is a folder
             except OSError:
                 size = total_bytes
         if size is None:
@@ -429,6 +609,18 @@ def archive_attachments(
         }
 
         if not exists:
+            # Archived on an earlier run, then evicted from the Mac by iCloud
+            # "Optimize Mac Storage"? Our copy is the backup — keep it settled
+            # rather than reporting it missing and pinning the state forever.
+            old = prior_records.get(att_id)
+            old_saved = old.get("saved_path") if old else None
+            if old_saved and os.path.exists(os.path.join(output_dir, old_saved)):
+                record = dict(old)
+                record["status"] = "already_archived"
+                skipped_existing += 1
+                claimed[old_saved] = att_id
+                records.append(record)
+                continue
             record["status"] = "missing"
             record["saved_path"] = None
             missing.append({
@@ -455,7 +647,10 @@ def archive_attachments(
             dest = os.path.join(output_dir, rel_path)
         record["saved_path"] = rel_path
 
-        already = os.path.exists(dest) and os.path.getsize(dest) == size
+        try:
+            already = os.path.exists(dest) and _path_size(dest) == size
+        except OSError:
+            already = False
         if dry_run:
             record["status"] = "already_archived" if already else "would_copy"
             if already:
@@ -465,18 +660,17 @@ def archive_attachments(
             skipped_existing += 1
         else:
             os.makedirs(os.path.dirname(dest), exist_ok=True)
-            # copy2 overwrites in place — this also heals a truncated partial
-            # file left under our own name by an interrupted earlier run.
+            # Overwrites in place — this also heals a truncated partial file
+            # left under our own name by an interrupted earlier run. Data is
+            # copied and size-checked first; metadata is best-effort.
             try:
-                shutil.copy2(src, dest)
+                _copy_path(src, dest)
                 record["status"] = "copied"
             except Exception as e:
                 record["status"] = f"error: {e}"
-                try:
-                    if os.path.exists(dest):
-                        os.remove(dest)   # never leave a partial file behind
-                except OSError:
-                    pass
+                _remove_path(dest)   # never leave a partial file behind
+                errors.append({"attachment_id": att_id, "file": src,
+                               "error": str(e)})
                 records.append(record)
                 unresolved(att_id)
                 continue
@@ -505,6 +699,8 @@ def archive_attachments(
         "skipped_existing": skipped_existing,
         "missing_count": len(missing),
         "missing": missing,
+        "error_count": len(errors),
+        "errors": errors,
         "by_conversation": by_conversation,
         "by_category": by_category,
     }
@@ -537,17 +733,29 @@ def archive_attachments(
     return result
 
 
+_EXT_RE = re.compile(r"^\.[A-Za-z0-9]{1,24}$")
+_MAX_NAME_BYTES = 200
+
+
 def safe_name_keep_ext(name):
     """Sanitize a filename while keeping a recognizable extension. The
     extension is sanitized too — a sender controls the original filename, and
     an unsanitized extension (e.g. `.jpg" onerror="…`) would otherwise flow
     into the src="…" attributes of the generated HTML transcripts."""
+    name = str(name)
     base, ext = os.path.splitext(name)
+    # Only a plain alphanumeric suffix counts as an extension (".HEIC",
+    # ".pluginPayloadAttachment"); "v1.2 release notes" has no extension and
+    # keeps its whole name as the base.
+    if not _EXT_RE.match(ext):
+        base, ext = name, ""
     cleaned = "".join(
         c if c.isalnum() or c in (" ", "-", "_", "(", ")", ".") else "_" for c in base
     ).strip()
-    ext_cleaned = "".join(c for c in ext if c.isalnum() or c == ".")[:10]
-    return (cleaned or "attachment")[:120] + ext_cleaned
+    cleaned = cleaned or "attachment"
+    # Filesystems cap a name at 255 BYTES (not characters) — CJK/emoji names
+    # blow past that at ~120 chars. Keep the whole name under ~200 bytes.
+    return _truncate_bytes(cleaned, _MAX_NAME_BYTES - len(ext)) + ext
 
 
 def write_manifests(records, output_dir):
@@ -643,6 +851,10 @@ def print_summary(result):
     if result["missing_count"]:
         print(f"  ⚠️  Missing / not downloaded: {result['missing_count']:,} "
               f"(see ATTACHMENTS_INDEX.md — re-download before deleting from phone)")
+    if result.get("error_count"):
+        first = result["errors"][0]
+        print(f"  ⚠️  {result['error_count']:,} file(s) could not be copied "
+              f"(first: {first.get('file')}: {first.get('error')})")
     print(f"  Destination: {result['output_dir']}")
     print("=" * 60)
 
@@ -660,15 +872,17 @@ def _is_inside(child, parent):
 
 
 def all_attachment_rows(cursor):
-    """Every attachment that belongs to a message (the archiver's scope)."""
-    cursor.execute("""
-        SELECT attachment.ROWID, attachment.filename, attachment.total_bytes,
-               attachment.mime_type, attachment.transfer_name
+    """Every attachment that belongs to a message (the archiver's scope).
+    One row per attachment ROWID (6 columns, `uti` last)."""
+    return _select_with_optional_uti(cursor, """
+        SELECT DISTINCT attachment.ROWID, attachment.filename,
+               attachment.total_bytes, attachment.mime_type,
+               attachment.transfer_name, {uti}
         FROM attachment
         JOIN message_attachment_join
           ON attachment.ROWID = message_attachment_join.attachment_id
+        ORDER BY attachment.ROWID ASC
     """)
-    return cursor.fetchall()
 
 
 def verify_archive(db_path=MESSAGES_DB, output_dir=None, drive_dir=None,
@@ -719,8 +933,8 @@ def verify_archive(db_path=MESSAGES_DB, output_dir=None, drive_dir=None,
 
     expected = {}
     unarchivable = 0
-    for rid, filename, total, mime_type, transfer_name in rows:
-        if types and categorize(mime_type, transfer_name or filename) not in types:
+    for rid, filename, total, mime_type, transfer_name, uti in rows:
+        if types and categorize(mime_type, transfer_name or filename, uti) not in types:
             continue
         if not filename:
             unarchivable += 1   # no file path in the DB — can never come down
@@ -743,11 +957,37 @@ def verify_archive(db_path=MESSAGES_DB, output_dir=None, drive_dir=None,
             "saved_path": rec.get("saved_path"),
         }
 
+    def local_state(rid, info):
+        """(present_and_intact, size) for the manifest's local copy of rid.
+        A file that exists but is the wrong size (Ctrl-C mid-copy) is NOT a
+        backup — the manifest's exact size_bytes wins; otherwise the DB total
+        with 1 KB tolerance."""
+        rec = man_by_id.get(rid)
+        saved = rec.get("saved_path") if rec else None
+        if not saved:
+            return False, None
+        local_path = os.path.join(output_dir, saved)
+        if not os.path.exists(local_path):
+            return False, None
+        try:
+            local_size = _path_size(local_path)
+        except OSError:
+            return False, None
+        want = rec.get("size_bytes")
+        if isinstance(want, int) and not isinstance(want, bool):
+            return local_size == want, local_size
+        if info["total"] and abs(local_size - info["total"]) > 1024:
+            return False, local_size
+        return True, local_size
+
     for rid, info in expected.items():
-        if not info["on_disk"]:
-            offloaded += 1            # referenced on the device, not downloaded
+        local_ok_file, local_size = local_state(rid, info)
+        if not info["on_disk"] and not local_ok_file:
+            offloaded += 1            # not on the device AND not archived
             offloaded_list.append(detail(rid))
             continue
+        # Either downloaded on the device, or evicted by iCloud AFTER we
+        # archived it — our intact copy is the backup, so it counts.
         downloadable += 1
         rec = man_by_id.get(rid)
         saved = rec.get("saved_path") if rec else None
@@ -756,26 +996,26 @@ def verify_archive(db_path=MESSAGES_DB, output_dir=None, drive_dir=None,
             if drive_mirror is not None:
                 missing_drive_list.append(detail(rid))
             continue
-        local_path = os.path.join(output_dir, saved)
-        local_size = None
-        if os.path.exists(local_path):
+        if local_ok_file:
             in_local += 1
-            try:
-                local_size = os.path.getsize(local_path)
-                if info["total"] and abs(local_size - info["total"]) > 1024:
-                    size_warn += 1
-            except OSError:
-                pass
+            if info["total"] and abs(local_size - info["total"]) > 1024:
+                size_warn += 1
         else:
             missing_local_list.append(detail(rid))
         if drive_mirror is not None:
             drive_path = os.path.join(drive_mirror, saved)
+            if local_ok_file:
+                ref_size = local_size
+            else:
+                ref_size = rec.get("size_bytes")
+                if isinstance(ref_size, bool) or not isinstance(ref_size, int):
+                    ref_size = None
             try:
                 # A Drive copy only counts if its size matches the local
                 # archive file — a truncated/partial mirror is NOT a backup.
                 drive_ok_file = os.path.exists(drive_path) and (
-                    local_size is None
-                    or os.path.getsize(drive_path) == local_size)
+                    ref_size is None
+                    or _path_size(drive_path) == ref_size)
             except OSError:
                 drive_ok_file = False
             if drive_ok_file:
@@ -991,10 +1231,15 @@ def main():
     def run_once(full):
         print(f"\nArchiving locally to: {output_dir}")
         if expect_drive:
-            dm = drive_archive_dir(drive_override)
-            print(f"…and mirroring to Google Drive: {dm}" if dm else
-                  "(No Google Drive detected — saving locally only. Install Google "
-                  "Drive for desktop or pass --drive PATH.)")
+            drive_root = drive_override or find_google_drive_dir()
+            dm = drive_archive_dir(drive_root)
+            if dm and (_is_inside(output_dir, drive_root)
+                       or _is_inside(dm, output_dir)):
+                print("(Archive already lives in Google Drive — nothing to mirror.)")
+            else:
+                print(f"…and mirroring to Google Drive: {dm}" if dm else
+                      "(No Google Drive detected — saving locally only. Install "
+                      "Google Drive for desktop or pass --drive PATH.)")
         archive_attachments(db_path=args.db, output_dir=output_dir,
                             full=full, types=types, dry_run=args.dry_run)
         if args.dry_run:

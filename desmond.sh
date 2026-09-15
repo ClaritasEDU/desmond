@@ -23,9 +23,14 @@ echo "  \"We have to push the button.\""
 echo "  \"4 8 15 16 23 42\""
 echo ""
 
-# Check if target was provided
-TARGET_MESSAGES=$1
+# Check if target was provided (accept 346,000 as well as 346000)
+TARGET_MESSAGES="${1//,/}"
 if [ -n "$TARGET_MESSAGES" ]; then
+    case "$TARGET_MESSAGES" in
+        *[!0-9]*)
+            echo "  Target must be a whole number of messages, e.g.:  ./desmond.sh 346000"
+            exit 1 ;;
+    esac
     echo "  Target: $TARGET_MESSAGES messages"
     echo ""
 fi
@@ -107,8 +112,14 @@ while true; do
         fi
     fi
     
-    # Click the Sync Now button
-    osascript <<EOF 2>/dev/null
+    # Click the Sync Now button (selecting the iMessage pane first — the
+    # Settings window is titled after whichever pane was last open).
+    # On the FIRST push, show osascript's errors: if macOS hasn't granted
+    # Terminal Automation (System Events + Messages) and Accessibility
+    # permission, the click silently never happens and every cycle would
+    # count as a "stall" — so stop with the real fix instead.
+    if [ $count -eq 1 ]; then
+        osa_err=$(osascript <<APPLESCRIPT 2>&1 >/dev/null
         tell application "Messages" to activate
         delay 0.3
         tell application "System Events"
@@ -116,13 +127,48 @@ while true; do
                 keystroke "," using command down
                 delay 0.5
                 try
+                    click button "iMessage" of toolbar 1 of window 1
+                    delay 0.3
+                end try
+                try
                     click button "Sync Now" of group 1 of group 1 of window "iMessage"
                     delay 0.2
                 end try
             end tell
         end tell
-EOF
-    
+APPLESCRIPT
+)
+        case "$osa_err" in
+            *"not authorized"*|*"Not authorized"*|*"assistive access"*|*"(-1743)"*|*"(-25211)"*)
+                echo "[$timestamp] ERROR: macOS won't let Terminal click Sync Now yet:"
+                echo "[$timestamp]   $osa_err"
+                echo "[$timestamp] Fix (one time): System Settings > Privacy & Security >"
+                echo "[$timestamp]   - Automation    -> Terminal -> allow System Events AND Messages"
+                echo "[$timestamp]   - Accessibility -> turn on Terminal"
+                echo "[$timestamp] then run ./desmond.sh again."
+                exit 1 ;;
+        esac
+    else
+        osascript <<APPLESCRIPT 2>/dev/null
+        tell application "Messages" to activate
+        delay 0.3
+        tell application "System Events"
+            tell process "Messages"
+                keystroke "," using command down
+                delay 0.5
+                try
+                    click button "iMessage" of toolbar 1 of window 1
+                    delay 0.3
+                end try
+                try
+                    click button "Sync Now" of group 1 of group 1 of window "iMessage"
+                    delay 0.2
+                end try
+            end tell
+        end tell
+APPLESCRIPT
+    fi
+
     # Every 12 cycles (3 minutes), show detailed status
     if [ $((count % 12)) -eq 0 ]; then
         echo ""

@@ -112,6 +112,7 @@ def read_live_source(args):
     import desmond_sources as sources
 
     if args.mac:
+        _exit_if_full_disk_access_missing(sources)
         return sources.read_mac_messages()
     if args.iphone is not None:
         if args.iphone:  # explicit folder given
@@ -129,9 +130,34 @@ def read_live_source(args):
     return _auto_source(sources)
 
 
+FDA_EXIT_CODE = 3   # "Full Disk Access needed" — the launchers key off this
+
+
+def _exit_if_full_disk_access_missing(sources, avail=None):
+    """chat.db is there but macOS won't let Terminal read it: print the one
+    fix that works and stop with exit code 3 (a generic "no messages" would
+    send the user down the wrong path)."""
+    if avail is None:
+        needs = sources.messages_db_state() == "no_access"
+    else:
+        needs = bool(avail.get("mac_messages_needs_full_disk_access"))
+    if not needs:
+        return
+    print(sources.FDA_FIX_MESSAGE)
+    if sys.platform == "darwin":
+        try:  # open the exact settings pane so nothing needs to be hunted for
+            import subprocess
+            subprocess.run(["open", "x-apple.systempreferences:com.apple."
+                            "preference.security?Privacy_AllFiles"], check=False)
+        except Exception:
+            pass
+    raise SystemExit(FDA_EXIT_CODE)
+
+
 def _auto_source(sources):
     """No source flag given: use the first thing this computer can read."""
     avail = sources.detect_available()
+    _exit_if_full_disk_access_missing(sources, avail)
     if avail.get("mac_messages"):
         return sources.read_mac_messages()
     if avail.get("iphone_backups"):
@@ -162,6 +188,33 @@ def _get_source_export(args):
         raise SystemExit(str(e))
 
 
+OUT_BASENAME = "personalcrm_import.json"
+
+
+def resolve_out_path(out):
+    """`--out` may name a file OR a folder (an existing directory, or a path
+    ending in a slash): a folder gets personalcrm_import.json inside it."""
+    out = os.path.expanduser(out)
+    if os.path.isdir(out) or out.endswith(os.sep) or out.endswith("/"):
+        out = os.path.join(out, OUT_BASENAME)
+    return out
+
+
+def write_json_atomic(path, payload):
+    """Write the file in one step: a crash or Ctrl-C mid-write leaves the old
+    file (or nothing) rather than a half-written JSON PersonalCRM rejects."""
+    folder = os.path.dirname(path) or "."
+    os.makedirs(folder, exist_ok=True)
+    tmp = os.path.join(folder, f".{os.path.basename(path)}.{os.getpid()}.tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(
         description="Export your text messages to a personalcrm_import.json that "
@@ -182,10 +235,8 @@ def main(argv=None):
     export = _get_source_export(args)
     payload = build_crm_export(export)
 
-    out = os.path.expanduser(args.out)
-    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
-    with open(out, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, ensure_ascii=False)
+    out = resolve_out_path(args.out)
+    write_json_atomic(out, payload)
 
     print(f"✅ Wrote {payload['total_messages']:,} messages across "
           f"{len(payload['conversations']):,} conversations to:\n   {out}")

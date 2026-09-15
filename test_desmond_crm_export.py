@@ -64,6 +64,28 @@ def sample_export():
     }
 
 
+class FakeSources:
+    """Stand-in for desmond_sources so the auto-detect path can be driven
+    without a Mac: `state` is what messages_db_state() reports."""
+    FDA_FIX_MESSAGE = "FAKE FDA FIX: System Settings → Privacy & Security → Full Disk Access"
+
+    def __init__(self, state):
+        self.state = state
+        self.read_calls = 0
+
+    def messages_db_state(self, path=None):
+        return self.state
+
+    def detect_available(self):
+        return {"platform": "darwin", "mac_messages": self.state == "ok",
+                "mac_messages_needs_full_disk_access": self.state == "no_access",
+                "iphone_backups": [], "adb_installed": False, "android_devices": []}
+
+    def read_mac_messages(self):
+        self.read_calls += 1
+        return sample_export()
+
+
 def main():
     print("desmond_crm_export tests\n")
 
@@ -123,6 +145,57 @@ def main():
         with open(out_path, encoding="utf-8") as f:
             written = json.load(f)
         check(written["app"] == "personalcrm", "written file is CRM-ready")
+
+        # --out pointing at a DIRECTORY writes personalcrm_import.json inside it.
+        out_dir = os.path.join(tmp, "Downloads")
+        os.makedirs(out_dir)
+        rc = bridge.main(["--from", folder, "--out", out_dir])
+        inside = os.path.join(out_dir, "personalcrm_import.json")
+        check(rc == 0 and os.path.isfile(inside),
+              "--out <existing directory> writes personalcrm_import.json inside it")
+        check(os.path.isdir(out_dir), "the directory is not clobbered by a file")
+        leftovers = [n for n in os.listdir(out_dir) if n.endswith(".tmp")]
+        check(not leftovers, f"atomic write leaves no temp file behind (got {leftovers})")
+        with open(inside, encoding="utf-8") as f:
+            check(json.load(f)["total_messages"] == 3, "directory-mode file is complete")
+
+        # A trailing slash means "folder", even one that doesn't exist yet.
+        new_dir = os.path.join(tmp, "NewFolder") + os.sep
+        rc = bridge.main(["--from", folder, "--out", new_dir])
+        check(rc == 0 and os.path.isfile(os.path.join(new_dir, "personalcrm_import.json")),
+              "--out with a trailing slash creates the folder and writes inside it")
+        check(bridge.resolve_out_path(out_path) == out_path,
+              "a plain file path is used as-is")
+
+        # Overwrite goes through os.replace: the old file is swapped, not truncated.
+        with open(inside, "w", encoding="utf-8") as f:
+            f.write("stale")
+        bridge.write_json_atomic(inside, {"fresh": True})
+        with open(inside, encoding="utf-8") as f:
+            check(json.load(f) == {"fresh": True}, "write_json_atomic replaces an existing file")
+
+    # Auto-detect on a Mac without Full Disk Access: print the fix, exit 3.
+    fake = FakeSources("no_access")
+    try:
+        bridge._auto_source(fake)
+        check(False, "auto-detect without Full Disk Access exits with code 3")
+    except SystemExit as e:
+        check(e.code == 3, f"auto-detect without Full Disk Access exits with code 3 (got {e.code})")
+    check(fake.read_calls == 0, "no read is attempted when access is missing")
+
+    # Readable Mac: no FDA exit, chat.db is read.
+    ok = FakeSources("ok")
+    bridge._exit_if_full_disk_access_missing(ok)
+    check(bridge._auto_source(ok)["total_messages"] == 3 and ok.read_calls == 1,
+          "auto-detect with a readable chat.db reads it normally")
+
+    # No Mac database at all: the generic 'nothing to read' exit (not code 3).
+    try:
+        bridge._auto_source(FakeSources("missing"))
+        check(False, "auto-detect with nothing readable exits with a message")
+    except SystemExit as e:
+        check(e.code != 3 and "Couldn't find any messages" in str(e.code),
+              "auto-detect with nothing readable exits with the generic message")
 
     print()
     if failures:

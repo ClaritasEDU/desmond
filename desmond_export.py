@@ -114,6 +114,34 @@ def render_index(output_dir, rows, totals):
         f.write(page)
 
 
+def _size_of(path):
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return None
+
+
+def messages_db_status(db_path):
+    """Classify why chat.db might be unreachable so the user gets the RIGHT fix.
+    Returns one of: "ok", "no_access" (Full Disk Access missing), "missing"."""
+    try:
+        with open(db_path, "rb") as f:
+            f.read(16)
+        return "ok"
+    except PermissionError:
+        return "no_access"
+    except OSError:
+        # Without Full Disk Access, macOS hides ~/Library/Messages entirely and
+        # reports it as *missing* (ENOENT), so a Mac whose home has a Library
+        # folder but no readable Messages folder is almost always a permission
+        # problem, not a missing database.
+        if (sys.platform == "darwin"
+                and os.path.isdir(os.path.expanduser("~/Library"))
+                and not os.access(os.path.dirname(db_path) or ".", os.R_OK)):
+            return "no_access"
+        return "missing"
+
+
 def build_archive(db_path, output_dir, order="oldest", photos_videos=False, verbose=True):
     """Single pass over Messages → per-conversation inline transcripts + copied
     attachments + an index + a manifest (which powers verify)."""
@@ -159,7 +187,7 @@ def build_archive(db_path, output_dir, order="oldest", photos_videos=False, verb
                         "original_name": info.get("name"),
                         "saved_path": os.path.join("conversations", safe, info["path"]),
                         "status": "copied",
-                        "size_bytes": None,
+                        "size_bytes": _size_of(os.path.join(cdir, info["path"])),
                     })
             media_by_id[r["id"]] = media
 
@@ -228,8 +256,12 @@ def run_once(db_path, output_dir, order, photos_videos, expect_drive, drive_over
     if not do_verify:
         return None
     print("\nVerifying (device vs local vs Google Drive)…")
+    # Verify against the same categories we archived — otherwise a
+    # --photos-videos run reports every skipped PDF/audio file as "missing"
+    # and can never be complete.
     res = attach.verify_archive(db_path=db_path, output_dir=output_dir,
-                                drive_mirror=drive_folder, expect_drive=expect_drive)
+                                drive_mirror=drive_folder, expect_drive=expect_drive,
+                                types=({"photo", "video"} if photos_videos else None))
     if logger and isinstance(res, dict):
         logger.metric(verify_complete=res.get("complete"),
                       in_local=res.get("in_local"), in_drive=res.get("in_drive"),
@@ -246,6 +278,18 @@ def run_once(db_path, output_dir, order, photos_videos, expect_drive, drive_over
                 except Exception:
                     pass
     return res
+
+
+def _is_done(res):
+    """"Done" for the exit code means EVERYTHING is archived: every downloadable
+    attachment is local (and on Drive), AND nothing is still offloaded in
+    iCloud. verify's own `complete` ignores offloaded items (they can't be
+    fetched by re-running), so a run can be "complete" yet still be missing
+    photos that only exist in iCloud — the user must download those in
+    Messages first, and the launcher tells them so on exit code 4."""
+    if not isinstance(res, dict):
+        return False
+    return bool(res.get("complete")) and not res.get("offloaded")
 
 
 def main():
@@ -269,7 +313,19 @@ def main():
                     help="Path to chat.db (default: ~/Library/Messages/chat.db).")
     args = ap.parse_args()
 
-    if not os.path.exists(args.db):
+    db_status = messages_db_status(args.db)
+    if db_status == "no_access":
+        print(f"Terminal isn't allowed to read your Messages database ({args.db}).")
+        print("Fix (one time): System Settings → Privacy & Security → Full Disk "
+              "Access → turn on Terminal, then QUIT Terminal (Cmd+Q) and run this again.")
+        if sys.platform == "darwin":
+            try:  # open the exact settings pane so nothing needs to be hunted for
+                subprocess.run(["open", "x-apple.systempreferences:com.apple.preference"
+                                ".security?Privacy_AllFiles"], check=False)
+            except Exception:
+                pass
+        sys.exit(3)  # 3 = Full Disk Access needed (launcher keys off this)
+    if db_status != "ok":
         print(f"Could not find your Messages database at {args.db}")
         print("This runs on a Mac with Messages. If Terminal lacks access: System "
               "Settings → Privacy & Security → Full Disk Access → enable Terminal.")
@@ -306,12 +362,16 @@ def main():
             else:
                 print("\n⚠️  Still incomplete — see VERIFY_REPORT.md. Download any "
                       "offloaded iCloud items, then run --retry again.")
-            done = bool(res and res.get("complete"))
+            done = _is_done(res)
         else:
             res = run_once(args.db, output_dir, order, args.photos_videos,
                            expect_drive, drive_override, do_verify=not args.no_verify,
                            logger=logger)
-            done = (res is None) or bool(res.get("complete"))
+            done = (res is None) or _is_done(res)
+    except KeyboardInterrupt:
+        status = "interrupted"
+        print("\nStopped (Control+C). Nothing is damaged — run again to rebuild; "
+              "already-copied attachments are reused.")
     except Exception as e:
         status = "error"
         print(f"Error: {e}")
@@ -328,11 +388,28 @@ def main():
               f"text or names): {log_path}")
 
     if status == "ok":
+        print(f"\nArchive folder: {output_dir}")
+        if not done:
+            if isinstance(res, dict) and res.get("complete") and res.get("offloaded"):
+                print(f"Built, but {res['offloaded']:,} item(s) are still offloaded in "
+                      "iCloud — open those threads in Messages (or turn off "
+                      "\"Optimize Mac Storage\") to download them, then run again. "
+                      "See VERIFY_REPORT.md in that folder.")
+            else:
+                print("Built, but NOT yet complete — see VERIFY_REPORT.md in that folder.")
         try:
             subprocess.run(["open", os.path.join(output_dir, "index.html")], check=False)
         except Exception:
             pass
-    sys.exit(0 if (done and status == "ok") else 1)
+    # Exit codes (the launcher keys off these):
+    #   0 = complete   1 = error   3 = Full Disk Access needed
+    #   4 = archive built but verify incomplete (offloaded / Drive still syncing)
+    #   130 = stopped with Control+C
+    if status == "interrupted":
+        sys.exit(130)
+    if status != "ok":
+        sys.exit(1)
+    sys.exit(0 if done else 4)
 
 
 if __name__ == "__main__":

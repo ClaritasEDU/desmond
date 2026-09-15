@@ -21,6 +21,7 @@ Drive desktop app then syncs that copy to your Google account — turn the
 import os
 import re
 import csv
+import sys
 import json
 import shutil
 import sqlite3
@@ -122,10 +123,15 @@ def decode_attributed_body(data):
         if chunk[0] == 0x81:  # 2-byte little-endian length follows
             length = int.from_bytes(chunk[1:3], "little")
             chunk = chunk[3:]
+        elif chunk[0] == 0x82:  # 4-byte little-endian length (long messages)
+            length = int.from_bytes(chunk[1:5], "little")
+            chunk = chunk[5:]
         else:
             length = chunk[0]
             chunk = chunk[1:]
-        text = chunk[:length].decode("utf-8", errors="ignore").strip()
+        text = chunk[:length].decode("utf-8", errors="ignore")
+        # U+FFFC marks where an inline attachment sat; it's noise in text.
+        text = text.replace("￼", "").strip()
         return text or None
     except Exception:
         return None
@@ -175,7 +181,7 @@ def resolve_range(range_key, start=None, end=None):
 # Database access
 # ---------------------------------------------------------------------------
 def open_db():
-    return sqlite3.connect(f"file:{MESSAGES_DB}?mode=ro", uri=True)
+    return sqlite3.connect(attach._ro_uri(MESSAGES_DB), uri=True)
 
 
 _conv_name_cache = {}
@@ -189,18 +195,20 @@ def conversation_name(handle_id, chat_id, display_name, cursor):
     hit = _conv_name_cache.get(key)
     if hit is not None:
         return hit
+    # SHARED NAMING RULE (same across every Desmond module): a chat whose
+    # identifier starts with "chat" is a group; anything else ("+1512…",
+    # "kate@example.com") is a direct chat named for that ONE counterpart,
+    # kept as the full identifier when no contact matches. Never abbreviate a
+    # number to its last four digits — two strangers ending in the same four
+    # digits would silently merge into one "person".
     if display_name:
         result = (display_name, "group")
     elif chat_id:
-        name = core.lookup_contact_name(chat_id)
-        if name == chat_id or str(name).startswith("chat"):
+        if str(chat_id).startswith("chat"):
             participants = core.get_chat_participants(chat_id, cursor)
-            if participants:
-                result = (participants, "group")
-            else:
-                result = (chat_id, "unknown")
+            result = (participants or chat_id, "group")
         else:
-            result = (name, "direct")
+            result = (core.lookup_contact_name(chat_id) or chat_id, "direct")
     elif handle_id:
         result = (core.get_contact_name(handle_id, cursor), "direct")
     else:
@@ -242,14 +250,10 @@ def attachments_for(cursor):
     """)
     result = defaultdict(list)
     for msg_id, att_id, mime_type, filename, transfer_name in cursor.fetchall():
-        if mime_type and mime_type.startswith("image"):
-            category = "photo"
-        elif mime_type and mime_type.startswith("video"):
-            category = "video"
-        elif mime_type and mime_type.startswith("audio"):
-            category = "audio"
-        else:
-            category = "file"
+        # Real chat.db rows often have a NULL mime_type (HEIC/MOV especially);
+        # fall back to the filename's extension so they still render inline
+        # and count as photos/videos for --photos-videos + verify.
+        category = attach.categorize(mime_type, transfer_name or filename)
         result[msg_id].append({
             "id": att_id, "category": category, "mime": mime_type,
             "filename": filename, "transfer_name": transfer_name,
@@ -263,13 +267,17 @@ def list_people():
     conn = open_db()
     cursor = conn.cursor()
     meta = {}
+    seen = set()   # a message joined to two chats (merged SMS/iMessage) counts once
     for row in iter_messages(cursor):
-        _, _, date, _, handle_id, _, _, chat_id, display_name, _ = row
+        rowid, _, date, _, handle_id, _, _, chat_id, display_name, _ = row
         dt = core.convert_apple_time(date)
         if dt is None:
             continue
         name, ctype = conversation_name(handle_id, chat_id, display_name, cursor)
         name = str(name)
+        if (rowid, name) in seen:
+            continue
+        seen.add((rowid, name))
         entry = meta.get(name)
         if entry is None:
             meta[name] = {"name": name, "type": ctype, "count": 1, "last": dt.isoformat()}
@@ -293,6 +301,8 @@ def make_record(row, att, cursor, person, want_text, want_att, want_react):
     # Recover text that Apple stashed in attributedBody instead of message.text
     if not text:
         text = decode_attributed_body(attributed)
+    if text:
+        text = text.replace("￼", "").strip()   # inline-attachment marker
 
     sender = "Me" if is_from_me else (
         core.get_contact_name(handle_id, cursor) if handle_id else "Unknown")
@@ -346,7 +356,10 @@ def gather(f):
     people = set(f.get("people") or [])
     since, until = resolve_range(f.get("range", "7d"), f.get("start") or None, f.get("end") or None)
     direction = f.get("direction", "both")
-    types = set(f.get("types") or ["text", "attachments", "reactions"])
+    # An explicit empty list means "nothing" (every content toggle off) —
+    # only a MISSING key falls back to everything.
+    types = f.get("types")
+    types = set(["text", "attachments", "reactions"] if types is None else types)
     want_text = "text" in types
     want_att = "attachments" in types
     want_react = "reactions" in types
@@ -361,12 +374,16 @@ def gather(f):
     att = attachments_for(cursor)
 
     out = []
+    seen = set()   # a message joined to two chats (merged SMS/iMessage) exports once
     for row in iter_messages(cursor, since, until):
-        _, _, _, is_from_me, handle_id, _, _, chat_id, display_name, _ = row
+        rowid, _, _, is_from_me, handle_id, _, _, chat_id, display_name, _ = row
         name, _ = conversation_name(handle_id, chat_id, display_name, cursor)
         name = str(name)
         if people and name not in people:
             continue
+        if rowid in seen:
+            continue
+        seen.add(rowid)
         if direction == "mine" and not is_from_me:
             continue
         if direction == "theirs" and is_from_me:
@@ -380,7 +397,10 @@ def gather(f):
         if exclude and any(k in hay for k in exclude):
             continue
         if redact:
+            # Scrub EVERY text field that reaches a saved file: conversation.html,
+            # .md and messages.json all read text_plain, not just text.
             rec["text"] = redact_text(rec["text"])
+            rec["text_plain"] = redact_text(rec["text_plain"])
             rec["redacted"] = True
         out.append(rec)
     conn.close()
@@ -567,9 +587,20 @@ reset();
 </script></body></html>"""
 
 
+def json_for_script(obj):
+    """JSON that is safe to inline inside a <script> block. Escaping every "<"
+    means no message text can open a comment ("<!--") or close the script
+    ("</script>") — either would let a texter's message break or hijack the
+    transcript page. U+2028/2029 are line terminators in JS but not JSON."""
+    return (json.dumps(obj)
+            .replace("<", "\\u003c")
+            .replace(" ", "\\u2028")
+            .replace(" ", "\\u2029"))
+
+
 def render_html(records, people, summary, default_order):
     title = "Messages — " + (", ".join(people) if people else "export")
-    payload = json.dumps(records).replace("</", "<\\/")
+    payload = json_for_script(records)
     return (HTML_TEMPLATE
             .replace("__TITLE__", _h(title))
             .replace("__SUMMARY__", _h(summary))
@@ -697,12 +728,25 @@ def export_records(records, people, f):
             writer.writerow(row)
 
     # 5. Mirror the whole export to Google Drive (so picks live local + Drive).
+    #    The local export is already complete on disk at this point — a Drive
+    #    hiccup (unmounted, full, a file in the way) must NOT turn a finished
+    #    export into an error; it's reported as a warning beside the local path.
     drive_folder = None
+    drive_error = None
     if f.get("mirror_drive", True):
         drive_base = drive_picks_base(f.get("drive"))
         if drive_base:
             drive_folder = os.path.join(drive_base, os.path.basename(folder))
-            attach.mirror_tree(folder, drive_folder)
+            copy_errors = []
+            try:
+                attach.mirror_tree(folder, drive_folder, errors=copy_errors)
+            except OSError as e:
+                drive_error = f"Google Drive copy failed ({e}); the local export is complete."
+                drive_folder = None
+            else:
+                if copy_errors:
+                    drive_error = (f"{len(copy_errors)} file(s) failed to copy to "
+                                   f"Google Drive; the local export is complete.")
 
     # 6. Verify the pick is present in both places; write a per-export report.
     saved_media = [(r, m) for r in records for m in media_by_id[r["id"]]
@@ -718,7 +762,8 @@ def export_records(records, people, f):
             else:
                 missing_drive.append((_r, m))
     write_pick_report(folder, drive_folder, people, summary, att_saved, att_missing,
-                      in_local, in_drive, saved_media, missing_drive)
+                      in_local, in_drive, saved_media, missing_drive,
+                      drive_error=drive_error)
 
     try:
         subprocess.run(["open", folder], check=False)
@@ -726,7 +771,7 @@ def export_records(records, people, f):
         pass
 
     return {"ok": True, "count": len(records), "folder": folder,
-            "drive_folder": drive_folder,
+            "drive_folder": drive_folder, "drive_error": drive_error,
             "first": first_date, "last": last_date,
             "attachments_saved": att_saved, "attachments_missing": att_missing,
             "in_local": in_local, "in_drive": in_drive,
@@ -734,7 +779,8 @@ def export_records(records, people, f):
 
 
 def write_pick_report(folder, drive_folder, people, summary, att_saved, att_missing,
-                      in_local, in_drive, saved_media, missing_drive):
+                      in_local, in_drive, saved_media, missing_drive,
+                      drive_error=None):
     """Per-export verification report: how many attachments in the local export
     vs Google Drive, and the list of any that didn't mirror."""
     missing_local = [(r, m) for r, m in saved_media
@@ -771,6 +817,8 @@ def write_pick_report(folder, drive_folder, people, summary, att_saved, att_miss
         drive_cell = f"{in_drive} / {att_saved}" if drive_folder else "not mirrored"
         mf.write(f"| Google Drive | {drive_cell} |\n\n")
         mf.write(f"**Verdict:** {verdict}\n")
+        if drive_error:
+            mf.write(f"\n**Google Drive warning:** {drive_error}\n")
         if missing_drive:
             mf.write(f"\n## Missing from Google Drive ({len(missing_drive)})\n\n")
             for r, m in missing_drive[:500]:
@@ -961,9 +1009,19 @@ PAGE = r"""<!DOCTYPE html>
 </div>
 
 <script>
-const state = { people: new Set(), range: "7d", dir: "both", order: "oldest", redact: false, mirror: true, shown: [] };
+const state = { people: new Set(), range: "7d", dir: "both", order: "oldest", redact: false, mirror: true, shown: [],
+                previewed: null };   // the exact filters the visible preview was built from
 
 function $(id){ return document.getElementById(id); }
+// Every value that reaches innerHTML goes through this — conversation names
+// and message text are written by whoever texted you, not by us.
+function esc(s){ return String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+// Any control change means the preview no longer matches what Save would do:
+// hide it, so the only way to save is to preview the current settings first.
+function invalidatePreview(){
+  state.previewed = null;
+  $("preview").style.display = "none";
+}
 
 // ---- people picker ----
 let allPeople = [];
@@ -976,15 +1034,15 @@ function renderPeople(filter) {
     row.className = "prow";
     const checked = state.people.has(p.name);
     row.innerHTML = `<input type="checkbox" ${checked?"checked":""}>
-      <span class="nm">${p.name}</span>
-      <span class="ct">${p.count.toLocaleString()} · ${p.type}</span>`;
+      <span class="nm">${esc(p.name)}</span>
+      <span class="ct">${Number(p.count||0).toLocaleString()} · ${esc(p.type)}</span>`;
     row.onclick = (e) => {
       if (e.target.tagName !== "INPUT") row.querySelector("input").click();
     };
     row.querySelector("input").onclick = (e) => {
       e.stopPropagation();
       if (e.target.checked) state.people.add(p.name); else state.people.delete(p.name);
-      renderChips();
+      renderChips(); invalidatePreview();
     };
     list.appendChild(row);
   });
@@ -996,7 +1054,7 @@ function renderChips() {
     const chip = document.createElement("span");
     chip.className = "chip";
     chip.textContent = name + "  ✕";
-    chip.onclick = () => { state.people.delete(name); renderChips(); renderPeople($("search").value); };
+    chip.onclick = () => { state.people.delete(name); renderChips(); renderPeople($("search").value); invalidatePreview(); };
     c.appendChild(chip);
   });
 }
@@ -1017,30 +1075,35 @@ document.querySelectorAll("#ranges .opt, [data-r=custom]").forEach(el => el.oncl
   el.classList.add("on");
   state.range = el.dataset.r;
   $("custom").classList.toggle("show", state.range === "custom");
+  invalidatePreview();
 });
 
 // ---- type toggles ----
-document.querySelectorAll("#types .tg").forEach(el => el.onclick = () => el.classList.toggle("on"));
+document.querySelectorAll("#types .tg").forEach(el => el.onclick = () => { el.classList.toggle("on"); invalidatePreview(); });
 // ---- direction ----
 document.querySelectorAll("#dir div").forEach(el => el.onclick = () => {
   document.querySelectorAll("#dir div").forEach(d => d.classList.remove("on"));
-  el.classList.add("on"); state.dir = el.dataset.d;
+  el.classList.add("on"); state.dir = el.dataset.d; invalidatePreview();
 });
 // ---- order ----
 document.querySelectorAll("#order div").forEach(el => el.onclick = () => {
   document.querySelectorAll("#order div").forEach(d => d.classList.remove("on"));
-  el.classList.add("on"); state.order = el.dataset.o;
+  el.classList.add("on"); state.order = el.dataset.o; invalidatePreview();
 });
 // ---- redact ----
 $("redact").onclick = () => {
   state.redact = !state.redact;
   $("redact").classList.toggle("on", state.redact);
+  invalidatePreview();
 };
 // ---- google drive mirror ----
 $("mirror").onclick = () => {
   state.mirror = !state.mirror;
   $("mirror").classList.toggle("on", state.mirror);
+  invalidatePreview();
 };
+// ---- free-text controls (dates, keywords, cap, destination) ----
+["start", "end", "include", "exclude", "cap", "dest"].forEach(id => $(id).oninput = invalidatePreview);
 
 function collect() {
   const types = [...document.querySelectorAll("#types .tg.on")].map(t => t.dataset.t);
@@ -1059,17 +1122,18 @@ $("go").onclick = () => {
   if (!state.people.size) { alert("Pick at least one person first."); return; }
   const btn = $("go"); btn.disabled = true; btn.textContent = "Loading preview…";
   $("result").className = "result";
+  const filters = collect();   // snapshot: Save exports exactly THIS, not later edits
   fetch("/api/preview", { method:"POST", headers:{"Content-Type":"application/json"},
-    body: JSON.stringify(collect()) })
+    body: JSON.stringify(filters) })
   .then(r => r.json()).then(d => {
     btn.disabled = false; btn.textContent = "Preview →";
     if (!d.ok) { showErr(d.error); return; }
     state.shown = d.records;
+    state.previewed = filters;
     renderPreview(d);
   }).catch(e => { btn.disabled = false; btn.textContent = "Preview →"; showErr(e); });
 };
 
-function esc(s){ return (s||"").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
 function renderPreview(d) {
   const box = $("msgs"); box.innerHTML = "";
   d.records.forEach(r => {
@@ -1077,7 +1141,7 @@ function renderPreview(d) {
     m.className = "m"; m.dataset.id = r.id;
     const body = r.message_type === "reaction" ? "<i>"+esc(r.text)+"</i>" : esc(r.text);
     m.innerHTML = `<input type="checkbox" checked>
-      <span class="meta">${r.date} ${r.time.slice(0,5)}<br>${esc(r.person)}</span>
+      <span class="meta">${esc(r.date)} ${esc(String(r.time||"").slice(0,5))}<br>${esc(r.person)}</span>
       <span class="body"><b>${esc(r.sender)}:</b> ${body}</span>`;
     m.querySelector("input").onchange = e => m.classList.toggle("off", !e.target.checked);
     box.appendChild(m);
@@ -1095,28 +1159,30 @@ $("back").onclick = () => { $("preview").style.display="none"; window.scrollTo({
 
 // ---- save ----
 $("save").onclick = () => {
+  if (!state.previewed) { showErr("Preview first — the settings changed since the last preview."); return; }
   const deselected = [...$("msgs").querySelectorAll(".m")]
     .filter(m => !m.querySelector("input").checked)
     .map(m => parseInt(m.dataset.id));
   const btn = $("save"); btn.disabled = true; btn.textContent = "Saving…";
   fetch("/api/export", { method:"POST", headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({ ...collect(), deselected }) })
+    body: JSON.stringify({ ...state.previewed, deselected }) })
   .then(r => r.json()).then(d => {
     btn.disabled = false; btn.textContent = "Save export";
     const res = $("result");
     if (d.ok) {
       res.className = "result ok";
-      const att = d.attachments_saved ? ` · <b>${d.attachments_saved.toLocaleString()}</b> attachments` : "";
-      const miss = d.attachments_missing ? ` (${d.attachments_missing} not downloaded from iCloud)` : "";
+      const att = d.attachments_saved ? ` · <b>${Number(d.attachments_saved).toLocaleString()}</b> attachments` : "";
+      const miss = d.attachments_missing ? ` (${Number(d.attachments_missing)} not downloaded from iCloud)` : "";
       let where = `<br><br>Local: <code>${esc(d.folder)}</code>`;
       if (d.drive_folder) where += `<br>Google Drive: <code>${esc(d.drive_folder)}</code>`;
+      if (d.drive_error) where += `<br>⚠️ Google Drive: ${esc(d.drive_error)}`;
       let vr = "";
       if (d.attachments_saved) {
-        vr = `<br><br>Verified — local ${d.in_local}/${d.attachments_saved}`
-           + (d.drive_folder ? `, Drive ${d.in_drive}/${d.attachments_saved}` : "")
-           + (d.missing_drive ? ` ⚠️ ${d.missing_drive} not yet on Drive` : " ✅");
+        vr = `<br><br>Verified — local ${Number(d.in_local)}/${Number(d.attachments_saved)}`
+           + (d.drive_folder ? `, Drive ${Number(d.in_drive)}/${Number(d.attachments_saved)}` : "")
+           + (d.missing_drive ? ` ⚠️ ${Number(d.missing_drive)} not yet on Drive` : " ✅");
       }
-      res.innerHTML = `✅ Saved <b>${d.count.toLocaleString()}</b> messages${att}${miss} (${d.first} → ${d.last}).`
+      res.innerHTML = `✅ Saved <b>${Number(d.count).toLocaleString()}</b> messages${att}${miss} (${esc(d.first)} → ${esc(d.last)}).`
         + where + vr
         + `<br><br>Open <code>conversation.html</code> to read it with photos & videos inline (toggle newest/oldest at the top). See <code>VERIFY_REPORT.md</code> for the per-place check.`;
     } else { res.className = "result err"; res.innerHTML = "⚠️ " + esc(d.error || "Failed."); }
@@ -1156,7 +1222,18 @@ class Handler(BaseHTTPRequestHandler):
         return origin.rstrip("/") in (f"http://127.0.0.1:{PORT}",
                                       f"http://localhost:{PORT}")
 
+    def _host_ok(self):
+        """Refuse requests whose Host header isn't our own loopback address.
+        A DNS-rebinding attack (evil.example resolving to 127.0.0.1) lets a
+        web page read /api/people and POST exports; the browser sends the
+        attacker's hostname in Host, so this check blocks it."""
+        host = (self.headers.get("Host") or "").strip().lower()
+        return host in (f"127.0.0.1:{PORT}", f"localhost:{PORT}")
+
     def do_GET(self):
+        if not self._host_ok():
+            self._send(403, json.dumps({"error": "unexpected Host header"}))
+            return
         if self.path == "/" or self.path.startswith("/index"):
             page = PAGE.replace("__DEFAULT_DEST__", _h(default_dest()))
             page = page.replace(
@@ -1173,6 +1250,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
+            if not self._host_ok():
+                self._send(403, json.dumps({"ok": False,
+                                            "error": "unexpected Host header"}))
+                return
             if not self._same_origin():
                 self._send(403, json.dumps({"ok": False,
                                             "error": "cross-origin request refused"}))
@@ -1204,13 +1285,47 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps({"ok": False, "error": str(e)}))
 
 
+PORT_RANGE = range(8765, 8786)   # 8765..8785: try the next one if a picker is already up
+
+
+def bind_server(ports=PORT_RANGE):
+    """Bind the picker to the first free port in `ports`, updating the module-wide
+    PORT so the URL, the Host allow-list and the same-origin check all agree.
+    Returns the server, or None if every port is busy."""
+    global PORT
+    for port in ports:
+        try:
+            server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+        except OSError:
+            continue
+        PORT = port
+        return server
+    return None
+
+
 def main():
-    if not os.path.exists(MESSAGES_DB):
+    import desmond_sources
+    state = desmond_sources.messages_db_state(MESSAGES_DB)
+    if state == "no_access":
+        print(desmond_sources.FDA_FIX_MESSAGE)
+        if sys.platform == "darwin":
+            try:  # open the exact settings pane so nothing needs to be hunted for
+                subprocess.run(["open", "x-apple.systempreferences:com.apple."
+                                "preference.security?Privacy_AllFiles"], check=False)
+            except Exception:
+                pass
+        sys.exit(3)   # 3 = Full Disk Access needed (launcher keys off this)
+    if state != "ok":
         print("Could not find your Messages database at ~/Library/Messages/chat.db")
         print("This tool only runs on a Mac with the Messages app set up.")
-        return
+        sys.exit(1)
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    server = bind_server()
+    if server is None:
+        print(f"Every port from {PORT_RANGE[0]} to {PORT_RANGE[-1]} is busy — is another "
+              "Desmond Picker already running? Close it (Control-C in its Terminal "
+              "window) and try again.")
+        sys.exit(2)
     url = f"http://127.0.0.1:{PORT}/"
     print("=" * 52)
     print("  Desmond Picker is running.")
@@ -1222,7 +1337,8 @@ def main():
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nStopped. See you in another life, brother.")
-        server.shutdown()
+    finally:
+        server.server_close()
 
 
 if __name__ == "__main__":

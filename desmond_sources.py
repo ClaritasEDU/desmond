@@ -40,14 +40,12 @@ family gap differ, where a "Loved" tapback only one phone recorded would
 show up as a fake missed message.
 """
 
-import json
 import os
-import re
 import sqlite3
 import sys
 from datetime import datetime
 
-from imessage_exporter_windows import (BACKUP_LOCATIONS, CONTACTS_DB_HASH,
+from imessage_exporter_windows import (BACKUP_LOCATIONS,
                                        MESSAGES_DB_HASH, backup_file_path,
                                        convert_apple_time)
 
@@ -61,6 +59,61 @@ MAC_BACKUP_LOCATIONS = [
 class SourceError(Exception):
     """A message source exists but can't be read; .args[0] says why in
     plain language (shown verbatim in the web UI)."""
+
+
+# Shown whenever macOS refuses to let us read chat.db. Without Full Disk
+# Access the OS hides ~/Library/Messages entirely, so a naive exists() check
+# reports "no database" and sends the user chasing the wrong fix.
+FDA_FIX_MESSAGE = (
+    "Terminal isn't allowed to read your Messages database (macOS Full Disk "
+    "Access is off). Fix (one time): System Settings → Privacy & Security → "
+    "Full Disk Access → turn on Terminal, then QUIT Terminal (Cmd+Q) and run "
+    "this again.")
+
+
+def messages_db_state(db_path=None):
+    """Classify why chat.db might be unreachable so the caller gives the
+    RIGHT fix. Returns "ok", "no_access" (Full Disk Access missing) or
+    "missing". Uses a real open()/stat instead of os.path.exists(), which
+    swallows EACCES and reports a protected database as absent."""
+    path = os.path.expanduser(db_path or MAC_CHAT_DB)
+    try:
+        with open(path, "rb") as f:
+            f.read(16)
+        return "ok"
+    except PermissionError:
+        return "no_access"
+    except FileNotFoundError:
+        pass
+    except OSError:
+        # EISDIR/ENOTDIR etc: exists in some form but isn't a readable file.
+        return "no_access" if _parent_unreadable(path) else "missing"
+    try:
+        os.stat(path)
+    except PermissionError:
+        return "no_access"
+    except OSError:
+        pass
+    if sys.platform == "darwin" and _parent_unreadable(path):
+        # macOS reports the hidden ~/Library/Messages as ENOENT, not EACCES.
+        return "no_access"
+    return "missing"
+
+
+def _parent_unreadable(path):
+    """True when ~/Library exists but the database's folder can't be listed —
+    the signature of a Mac without Full Disk Access."""
+    parent = os.path.dirname(path) or "."
+    library = os.path.expanduser("~/Library")
+    if not os.path.isdir(library):
+        return False
+    try:
+        os.listdir(parent)
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return not os.access(parent, os.R_OK | os.X_OK)
 
 
 # ---------------------------------------------------------------------------
@@ -97,10 +150,15 @@ def read_imessage_db(db_path, lookup=None, source_label="iMessage"):
 
     lookup: optional callable identifier -> contact name.
     """
-    if not os.path.exists(db_path):
+    state = messages_db_state(db_path)
+    if state == "no_access":
+        raise SourceError(FDA_FIX_MESSAGE)
+    if state != "ok":
         raise SourceError(f"No messages database at {db_path}")
     try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        from urllib.parse import quote
+        conn = sqlite3.connect("file:" + quote(os.path.abspath(os.path.expanduser(db_path)))
+                               + "?mode=ro", uri=True)
         cursor = conn.cursor()
         try:
             rows = cursor.execute(
@@ -163,6 +221,9 @@ def read_imessage_db(db_path, lookup=None, source_label="iMessage"):
             continue                       # tapback/reaction — see docstring
         if not text and has_body and attributed:
             text = _decode_body(attributed)
+        if text:
+            # U+FFFC marks where an inline attachment sat; it's noise in text.
+            text = text.replace("￼", "").strip()
         if not text and not has_att:
             continue
         when = convert_apple_time(date)
@@ -238,7 +299,10 @@ def read_mac_messages(db_path=None):
     """Messages already on this Mac (chat.db) — the zero-plug path for the
     parent whose computer this is."""
     path = db_path or MAC_CHAT_DB
-    if not os.path.exists(path):
+    state = messages_db_state(path)
+    if state == "no_access":
+        raise SourceError(FDA_FIX_MESSAGE)
+    if state != "ok":
         raise SourceError(
             "This computer has no Messages database. Use the iPhone/Android "
             "plug-in options instead.")
@@ -382,8 +446,12 @@ def detect_available():
     """Snapshot of every message source this computer can currently reach —
     the web wizard calls this (and re-calls it when the user taps Rescan
     after plugging a phone in)."""
+    mac_state = messages_db_state(MAC_CHAT_DB)
     out = {"platform": sys.platform,
-           "mac_messages": os.path.exists(MAC_CHAT_DB),
+           "mac_messages": mac_state == "ok",
+           # True when chat.db is there but macOS won't let us read it —
+           # the caller should show the Full Disk Access fix, not "no Mac".
+           "mac_messages_needs_full_disk_access": mac_state == "no_access",
            "iphone_backups": find_iphone_backups(),
            "adb_installed": False, "android_devices": []}
     try:

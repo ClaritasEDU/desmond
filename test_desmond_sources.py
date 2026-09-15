@@ -6,11 +6,15 @@ layout, Info.plist and all), and Android XML bytes, then checks every
 reader lands on the same standard export shape. No real Mac, phone, or adb.
 """
 
+import builtins
 import json
 import os
 import plistlib
+import shutil
 import sqlite3
+import subprocess
 import tempfile
+import textwrap
 
 import desmond_sources as src
 from imessage_exporter_windows import MESSAGES_DB_HASH
@@ -20,6 +24,21 @@ APPLE_EPOCH = 978307200
 
 def apple_ns(unix_ts):
     return int((unix_ts - APPLE_EPOCH) * 1_000_000_000)
+
+
+def typedstream(text):
+    """Minimal NSAttributedString typedstream (see test_imessage_picker)."""
+    n = len(text)
+    if n < 128:
+        ln = bytes([n])
+    elif n < 32768:
+        ln = b"\x81" + n.to_bytes(2, "little")
+    else:
+        ln = b"\x82" + n.to_bytes(4, "little")
+    return (b"\x04\x0bstreamtyped\x81\xe8\x03\x84\x01@\x84\x84\x84\x12NSAttributedString"
+            b"\x00\x84\x84\x08NSObject\x00\x85\x92\x84\x84\x84\x0fNSMutableString\x01"
+            b"\x84\x84\x08NSString\x01\x94\x84\x01+" + ln + text
+            + b"\x86\x84\x02iI\x01\x01\x92\x84\x84\x84\x0cNSDictionary\x00\x86\x86\x86")
 
 
 def make_chat_db(path, with_body_column=True):
@@ -73,6 +92,56 @@ ANDROID_XML = b"""<?xml version='1.0' encoding='UTF-8'?>
   <sms address="+15125550142" date="1751968900000" type="2"
        body="Got it" contact_name="Coach Dan" />
 </smses>"""
+
+
+def unprivileged_runner_available():
+    """root ignores chmod 000, so the real-permissions test needs a second
+    user: `runuser -u nobody` (Linux). Returns False when that's not here."""
+    if os.name != "posix" or os.geteuid() != 0 or not shutil.which("runuser"):
+        return False
+    try:
+        import pwd
+        pwd.getpwnam("nobody")
+        return True
+    except KeyError:
+        return False
+
+
+def classify_as_nobody():
+    """Build a fake ~/Library/Messages/chat.db that user `nobody` can't read
+    (chmod 000 folder) and ask messages_db_state() about it AS nobody."""
+    home = tempfile.mkdtemp(prefix="desmond_fda_")
+    os.chmod(home, 0o755)
+    msgs = os.path.join(home, "Library", "Messages")
+    os.makedirs(msgs)
+    with open(os.path.join(msgs, "chat.db"), "wb") as f:
+        f.write(b"SQLite format 3\x00" + b"\x00" * 100)
+    os.chmod(msgs, 0o000)
+    runner = os.path.join(home, "runner.py")
+    with open(runner, "w") as f:
+        f.write(textwrap.dedent(f"""
+            import os, sys
+            sys.path.insert(0, {os.path.dirname(os.path.abspath(src.__file__))!r})
+            import desmond_sources as s
+            db = os.path.expanduser("~/Library/Messages/chat.db")
+            print("exists", os.path.exists(db))
+            print("state", s.messages_db_state(db))
+            a = s.detect_available()
+            print("needs", a["mac_messages_needs_full_disk_access"], a["mac_messages"])
+            try:
+                s.read_mac_messages()
+                print("read ok")
+            except s.SourceError as e:
+                print("read", "Full Disk Access" in str(e))
+        """))
+    os.chmod(runner, 0o644)
+    try:
+        r = subprocess.run(["runuser", "-u", "nobody", "--", "env", f"HOME={home}",
+                            "python3", runner], capture_output=True, text=True, timeout=60)
+        return r.stdout + r.stderr
+    finally:
+        os.chmod(msgs, 0o700)
+        shutil.rmtree(home, ignore_errors=True)
 
 
 def main():
@@ -147,12 +216,83 @@ def main():
         check(att["message_type"] == "attachment",
               "attachment-only rows typed 'attachment' like the exporters")
 
+        # U+FFFC (inline-attachment marker) is stripped; long attributedBody
+        # texts (0x82 + 4-byte length) decode in full.
+        conn = sqlite3.connect(db)
+        conn.execute("INSERT INTO message (ROWID, text, date, is_from_me, handle_id, "
+                     "associated_message_type, cache_has_attachments) "
+                     "VALUES (12, ?, ?, 0, 1, 0, 1)",
+                     ("￼photo caption", apple_ns(1783504800 + 360)))
+        conn.execute("INSERT INTO message (ROWID, text, attributedBody, date, is_from_me, "
+                     "handle_id, associated_message_type, cache_has_attachments) "
+                     "VALUES (13, NULL, ?, ?, 0, 1, 0, 0)",
+                     (typedstream(b"Z" * 40000), apple_ns(1783504800 + 420)))
+        conn.execute("INSERT INTO chat_message_join VALUES (10, 12)")
+        conn.execute("INSERT INTO chat_message_join VALUES (10, 13)")
+        conn.commit(); conn.close()
+        export_ffc = src.read_imessage_db(db, lookup=names.get)
+        by_text = {m["text"][:12]: m for m in export_ffc["messages"]}
+        check("photo captio" in by_text and by_text["photo captio"]["text"] == "photo caption",
+              "U+FFFC object-replacement character stripped from text")
+        long_msg = [m for m in export_ffc["messages"] if m["text"].startswith("ZZZ")]
+        check(len(long_msg) == 1 and len(long_msg[0]["text"]) == 40000,
+              "attributedBody with 0x82 4-byte length decodes the whole message "
+              f"(got {len(long_msg[0]['text']) if long_msg else 0})")
+
         # ---- Mac path errors are human -----------------------------------
         try:
             src.read_mac_messages(db_path=os.path.join(tmp, "nope.db"))
             check(False, "missing chat.db raises SourceError")
-        except src.SourceError:
-            check(True, "missing chat.db raises SourceError")
+        except src.SourceError as e:
+            check("Full Disk Access" not in str(e),
+                  "missing chat.db raises SourceError (and not the FDA hint)")
+
+        # ---- Full Disk Access classification ------------------------------
+        check(src.messages_db_state(db) == "ok", "readable chat.db → state 'ok'")
+        check(src.messages_db_state(os.path.join(tmp, "nope.db")) == "missing",
+              "absent chat.db → state 'missing'")
+
+        # (a) monkeypatched open(): EACCES on chat.db is 'no_access', never 'missing'
+        real_open = builtins.open
+
+        def denied_open(path, *a, **k):
+            if os.fspath(path) == db:
+                raise PermissionError(13, "Operation not permitted", os.fspath(path))
+            return real_open(path, *a, **k)
+
+        builtins.open = denied_open
+        try:
+            check(src.messages_db_state(db) == "no_access",
+                  "PermissionError on open() → state 'no_access'")
+            try:
+                src.read_mac_messages(db_path=db)
+                check(False, "read_mac_messages without access raises the FDA fix")
+            except src.SourceError as e:
+                check("Full Disk Access" in str(e) and "Privacy & Security" in str(e),
+                      "read_mac_messages without access raises the FDA fix")
+            try:
+                src.read_imessage_db(db)
+                check(False, "read_imessage_db without access raises the FDA fix")
+            except src.SourceError as e:
+                check("Full Disk Access" in str(e),
+                      "read_imessage_db without access raises the FDA fix")
+        finally:
+            builtins.open = real_open
+
+        # (b) real permissions, as an unprivileged user (root ignores chmod 000)
+        if unprivileged_runner_available():
+            out = classify_as_nobody()
+            check("exists False" in out,
+                  "as nobody: os.path.exists() hides the protected chat.db (the old bug)")
+            check("state no_access" in out,
+                  f"as nobody: chmod-000 Messages folder → 'no_access' (output: {out.strip()!r})")
+            check("needs True False" in out,
+                  "as nobody: detect_available flags mac_messages_needs_full_disk_access")
+            check("read True" in out,
+                  "as nobody: read_mac_messages raises the FDA fix")
+        else:
+            print("SKIP: no `runuser`/`nobody` (or not root) — real-permission FDA "
+                  "check covered by the monkeypatched variant above")
 
         # ---- iPhone backup discovery + read ------------------------------
         backups_root = os.path.join(tmp, "Backup")
@@ -215,8 +355,14 @@ def main():
         # ---- detect_available never crashes -------------------------------
         avail = src.detect_available()
         check(set(avail) >= {"platform", "mac_messages", "iphone_backups",
-                             "adb_installed", "android_devices"},
-              "detect_available returns the full snapshot")
+                             "adb_installed", "android_devices",
+                             "mac_messages_needs_full_disk_access"},
+              "detect_available returns the full snapshot (incl. the FDA flag)")
+        check(isinstance(avail["mac_messages"], bool)
+              and isinstance(avail["mac_messages_needs_full_disk_access"], bool),
+              "mac_messages stays a bool; FDA flag is a bool")
+        check(not (avail["mac_messages"] and avail["mac_messages_needs_full_disk_access"]),
+              "a readable chat.db never also claims to need Full Disk Access")
 
     print()
     if failures:
