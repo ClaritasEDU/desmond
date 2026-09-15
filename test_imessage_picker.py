@@ -274,6 +274,14 @@ def main():
         # =====================================================================
         db = os.path.join(tmp, "chat.db")
         make_chat_db(db)
+        # Two photo attachments: one real file (the IMG_1.jpg written above)
+        # and one offloaded in iCloud (path doesn't exist).
+        _c = sqlite3.connect(db)
+        _c.executemany("INSERT INTO attachment VALUES (?,?,?,?)", [
+            (1, "image/jpeg", photo, "IMG_1.jpg"),
+            (2, "image/heic", "/no/such/offloaded.heic", "IMG_2.HEIC")])
+        _c.executemany("INSERT INTO message_attachment_join VALUES (?,?)", [(7, 1), (7, 2)])
+        _c.commit(); _c.close()
         saved_db, saved_port = picker.MESSAGES_DB, picker.PORT
         picker.MESSAGES_DB = db
         picker._contacts_loaded = True      # no AddressBook: identifiers stay raw
@@ -367,6 +375,21 @@ def main():
                 check(code == 200, f"GET with Host localhost:PORT is served (got {code})")
                 code, _ = http(port, "/", f"evil.example:{port}")
                 check(code == 403, "the page itself is refused for a bad Host")
+
+                # -- /api/media serves the REAL photo bytes for the preview
+                req = urllib.request.Request(f"http://127.0.0.1:{port}/api/media/1")
+                req.add_header("Host", f"127.0.0.1:{port}")
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    check(resp.status == 200 and resp.headers["Content-Type"] == "image/jpeg",
+                          "preview photo served with an image content type")
+                    check(resp.read() == open(photo, "rb").read(), "preview photo is the original bytes")
+                code, _ = http(port, "/api/media/1", f"evil.example:{port}")
+                check(code == 403, "preview photo refused for a rebinding Host")
+                code, _ = http(port, "/api/media/2", f"127.0.0.1:{port}")
+                check(code == 404, "an offloaded (missing) photo → 404, not a crash")
+                code, _ = http(port, "/api/media/abc", f"127.0.0.1:{port}")
+                check(code == 404, "a non-numeric id → 404")
+                check('src="/api/media/${Number(a.id)}"' in picker.PAGE, "preview renders real photo thumbnails")
                 code, _ = http(port, "/api/preview", f"evil.example:{port}", "POST",
                                '{"people":["+15125550100"],"range":"all"}')
                 check(code == 403, f"POST with a rebinding Host is refused (got {code})")
