@@ -47,6 +47,10 @@ inline in date order, saved locally AND mirrored to Google Drive, then verified
 (device vs local vs Drive). Reads Messages read-only. Conversations with numbers
 that aren't in your Contacts are named by the full number (never merged).
 
+PDF of a conversation: open it in the archive and click **🖨 Save as PDF**
+(then choose Save as PDF in the print window). All conversations at once:
+double-click `desmond_pdf.command` (needs Chrome, Edge or Chromium installed).
+
 Logs: the app writes a PII-safe, shareable log to `~/Downloads/Desmond_Logs/`
 (counts, timings, errors — no message text or names). The launcher also writes a
 raw console log there (`oneshot_mac_launcher_*.log`) that stays on your Mac only.
