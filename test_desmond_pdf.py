@@ -67,6 +67,17 @@ def main():
         check(cmd[-1].startswith("file://") and cmd[-1].endswith("?print=1"), "opens the transcript with ?print=1")
         check("--no-pdf-header-footer" in cmd, "no browser header/footer on the pages")
 
+        # --- render budget scales with the export -------------------------------
+        b_small = dp.render_budget(50, 5)
+        b_big = dp.render_budget(4400, 800)
+        check(b_small == 20000, "small export keeps the 20s image-loading floor")
+        check(b_big > 100000, f"4,400-message export gets a much larger image-loading budget ({b_big}ms)")
+        import inspect
+        check(inspect.signature(dp.convert).parameters["timeout"].default is None,
+              "renders are never abandoned by default (no timeout)")
+        check(f"--virtual-time-budget={b_big}" in dp.pdf_command(fake, "x.html", "x.pdf", b_big),
+              "virtual-time budget is passed through to the browser")
+
         # --- conversion + CLI ---------------------------------------------------
         err = dp.convert(fake, os.path.join(tmp, "conversations", "Mom", "conversation.html"),
                          os.path.join(tmp, "conversations", "Mom", "conversation.pdf"))

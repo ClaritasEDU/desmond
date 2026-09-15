@@ -830,7 +830,41 @@ def export_records(records, people, f):
     #    people actually want to hand to someone. Rendered from the transcript
     #    by a headless Chrome/Edge/Chromium already on the Mac; if none is
     #    installed, the transcript's own "Save as PDF" button is the fallback.
-    pdf_path, pdf_error = make_pdf(folder, label, f.get("range", "range"))
+    n_photos = sum(1 for ms in media_by_id.values() for m in ms
+                   if m.get("category") == "photo" and not m.get("missing"))
+    range_key = f.get("range", "range")
+
+    # 6a. With several conversations: ONE PDF PER CONVERSATION first, rendered
+    #     one at a time (small, quick, progress visible, one failure can't
+    #     take the others down), then the combined PDF.
+    pdf_sections = []
+    if len(people) > 1:
+        by_conv = defaultdict(list)
+        for hr in html_records:
+            by_conv[hr["person"]].append(hr)
+        names = sorted(by_conv, key=lambda n: str(n))
+        sec_dir = os.path.join(folder, "sections")
+        os.makedirs(sec_dir, exist_ok=True)
+        for i, name in enumerate(names, start=1):
+            recs_i = by_conv[name]
+            sec_html = os.path.join(sec_dir, f"{i:02d}_{safe_name(name)}.html")
+            sec_summary = f"{len(recs_i):,} messages · section {i} of {len(names)}"
+            with open(sec_html, "w", encoding="utf-8") as hf:
+                # Attachments live one level up from sections/ — point there.
+                hf.write(render_html(
+                    [dict(r, media=[dict(m, path="../" + m["path"], display="../" + m.get("display", m["path"]))
+                                    if not m.get("missing") else m for m in r["media"]])
+                     for r in recs_i], [name], sec_summary, order))
+            n_ph = sum(1 for r in recs_i for m in r["media"]
+                       if m.get("category") == "photo" and not m.get("missing"))
+            print(f"Section {i} of {len(names)}: {name} ({len(recs_i):,} messages)", flush=True)
+            sec_pdf, sec_err = make_pdf(folder, f"{i:02d}_{safe_name(name)}", range_key,
+                                        n_messages=len(recs_i), n_photos=n_ph, html_path=sec_html)
+            pdf_sections.append({"name": name, "pdf": sec_pdf, "error": sec_err,
+                                 "messages": len(recs_i)})
+
+    pdf_path, pdf_error = make_pdf(folder, label, range_key,
+                                   n_messages=len(records), n_photos=n_photos)
 
     try:
         # Open the PDF itself when we have one; otherwise the folder.
@@ -839,7 +873,7 @@ def export_records(records, people, f):
         pass
 
     return {"ok": True, "count": len(records), "folder": folder,
-            "pdf_path": pdf_path, "pdf_error": pdf_error,
+            "pdf_path": pdf_path, "pdf_error": pdf_error, "pdf_sections": pdf_sections,
             "drive_folder": drive_folder, "drive_error": drive_error,
             "first": first_date, "last": last_date,
             "attachments_saved": att_saved, "attachments_missing": att_missing,
@@ -891,22 +925,40 @@ def preview_photo_path(att_id):
     return src, (mime or "application/octet-stream")
 
 
-def make_pdf(folder, label, range_key):
+def make_pdf(folder, label, range_key, n_messages=0, n_photos=0, html_path=None):
     """Render <folder>/conversation.html to <folder>/<label>_<range>.pdf.
-    Returns (pdf_path, None) or (None, reason)."""
+    Returns (pdf_path, None) or (None, reason). The reason is also printed to
+    the Terminal window and written to PDF_README.txt in the folder, so it can
+    never silently vanish."""
+    def fail(reason):
+        print(f"\n⚠️  No automatic PDF: {reason}", flush=True)
+        try:
+            with open(os.path.join(folder, "PDF_README.txt"), "w", encoding="utf-8") as fh:
+                fh.write("No automatic PDF was made.\n\nReason: " + reason + "\n\n"
+                         "To make one yourself: open conversation.html in this folder, click "
+                         "\"Save as PDF\" at the top, then choose Save as PDF in the print window.\n")
+        except OSError:
+            pass
+        return None, reason
     try:
         import desmond_pdf
     except ImportError:
-        return None, "desmond_pdf.py is missing next to imessage_picker.py."
+        return fail("desmond_pdf.py is missing next to imessage_picker.py.")
     browser = desmond_pdf.find_browser()
     if not browser:
-        return None, ("No Chrome/Edge/Chromium on this Mac for automatic PDFs. Open "
-                      "conversation.html and click \u201cSave as PDF\u201d, or install Google Chrome.")
-    html = os.path.join(folder, "conversation.html")
+        return fail("No Chrome/Edge/Chromium on this Mac for automatic PDFs. Install Google "
+                    "Chrome (free) and Save again, or open conversation.html and click "
+                    "\u201cSave as PDF\u201d.")
+    html = html_path or os.path.join(folder, "conversation.html")
     pdf = os.path.join(folder, f"{label}_{range_key}.pdf")
-    err = desmond_pdf.convert(browser, html, pdf)
+    budget = desmond_pdf.render_budget(n_messages, n_photos)
+    print(f"\nRendering PDF ({n_messages:,} messages, {n_photos:,} photos). This runs "
+          "until it finishes — a big thread can take several minutes…", flush=True)
+    err = desmond_pdf.convert(browser, html, pdf, budget_ms=budget)
     if err:
-        return None, f"PDF could not be rendered ({err}). Open conversation.html and click \u201cSave as PDF\u201d."
+        return fail(f"PDF could not be rendered ({err}). Open conversation.html and click "
+                    "\u201cSave as PDF\u201d.")
+    print(f"PDF written: {pdf}", flush=True)
     return pdf, None
 
 
@@ -1370,6 +1422,13 @@ $("save").onclick = () => {
       let where = d.pdf_path
         ? `<br><br>📄 <b>Your PDF</b> (everything in order, photos inline) — it just opened: <code>${esc(d.pdf_path)}</code>`
         : `<br><br>⚠️ No automatic PDF: ${esc(d.pdf_error || "")}`;
+      if (d.pdf_sections && d.pdf_sections.length) {
+        where += `<br><br><b>One PDF per conversation</b> (same folder):`;
+        d.pdf_sections.forEach(sct => {
+          where += sct.pdf ? `<br>📄 ${esc(sct.name)} — ${Number(sct.messages).toLocaleString()} messages — <code>${esc(sct.pdf.split("/").pop())}</code>`
+                           : `<br>⚠️ ${esc(sct.name)} — no PDF: ${esc(sct.error || "")}`;
+        });
+      }
       where += `<br>Folder with the transcript + the original photo/video files: <code>${esc(d.folder)}</code>`;
       if (d.drive_folder) where += `<br>Google Drive: <code>${esc(d.drive_folder)}</code>`;
       if (d.drive_error) where += `<br>⚠️ Google Drive: ${esc(d.drive_error)}`;

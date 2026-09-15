@@ -67,7 +67,7 @@ def list_conversations(archive, picks=None):
     return rows
 
 
-def pdf_command(browser, html_path, pdf_path):
+def pdf_command(browser, html_path, pdf_path, budget_ms=20000):
     """The headless print command. ?print=1 makes the page render every
     message and preload the photos before the browser snapshots it."""
     url = "file://" + os.path.abspath(html_path) + "?print=1"
@@ -77,13 +77,22 @@ def pdf_command(browser, html_path, pdf_path):
     return [browser, *extra, "--headless=new", "--disable-gpu", "--no-first-run",
             "--no-default-browser-check", "--hide-scrollbars",
             "--run-all-compositor-stages-before-draw",
-            "--virtual-time-budget=20000",   # let lazy images load first
+            f"--virtual-time-budget={int(budget_ms)}",   # let lazy images load first
             "--no-pdf-header-footer",
             f"--print-to-pdf={os.path.abspath(pdf_path)}", url]
 
 
-def convert(browser, html_path, pdf_path, timeout=300):
-    cmd = pdf_command(browser, html_path, pdf_path)
+def render_budget(n_messages=0, n_photos=0):
+    """Virtual-time budget (ms) the browser is allowed for loading photos
+    before it snapshots the page, scaled to the export. Not a timeout: a
+    render is never abandoned — it runs until the browser finishes."""
+    return int(max(20000, 5000 + n_messages * 10 + n_photos * 150))
+
+
+def convert(browser, html_path, pdf_path, timeout=None, budget_ms=20000):
+    """Render html → pdf. Waits as long as the browser needs (no cap) unless
+    a `timeout` in seconds is explicitly given."""
+    cmd = pdf_command(browser, html_path, pdf_path, budget_ms)
     try:
         subprocess.run(cmd, check=True, capture_output=True, timeout=timeout)
     except subprocess.CalledProcessError as e:
