@@ -78,6 +78,18 @@ def main():
         ])
 
         out = os.path.join(tmp, "Archive")
+
+        # Progress callback: gather() reports at start and at the end of the read
+        import imessage_picker as pick
+        pick.MESSAGES_DB = db
+        pick._contacts_loaded = False
+        calls = []
+        pick.gather({"range": "all", "direction": "both", "order": "oldest",
+                     "types": ["text", "attachments", "reactions"]},
+                    progress=lambda n, k: calls.append((n, k)))
+        check(calls and calls[0] == (0, 0), "gather progress fires at start")
+        check(calls[-1][0] >= 2 and calls[-1][1] >= 2, "gather progress reports final counts")
+
         res = dx.build_archive(db, out, order="oldest", verbose=False)
         check(res["conversations"] == 2, f"two conversations exported (got {res['conversations']})")
         check(res["attachments"] == 1, f"one real attachment copied (got {res['attachments']})")
