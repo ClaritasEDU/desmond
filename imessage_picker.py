@@ -945,6 +945,16 @@ PAGE = r"""<!DOCTYPE html>
   .m .meta { color:var(--mut); font-size:11.5px; white-space:nowrap; }
   .m.off { opacity:.4; }
   .m .body b { color:var(--accent); }
+  /* Full-page gate while the server reads every conversation out of Messages.
+     Nothing can be clicked until the list is real. */
+  #loading { position:fixed; inset:0; background:var(--bg); z-index:50; display:flex; align-items:center; justify-content:center; text-align:center; padding:24px; }
+  #loading .box { max-width:460px; }
+  #loading h2 { font-size:20px; margin:0 0 10px; color:var(--txt); text-transform:none; letter-spacing:0; }
+  #loading p { color:var(--mut); margin:6px 0; }
+  #loading .spin { width:34px; height:34px; border:3px solid var(--line); border-top-color:var(--accent); border-radius:50%; margin:0 auto 18px; animation:spin 1s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  #loading.err .spin { display:none; }
+  #loading.err h2 { color:#e88; }
   .result { padding:15px; border-radius:10px; margin-top:16px; display:none; }
   .result.ok { display:block; background:#16321f; border:1px solid var(--ok); }
   .result.err { display:block; background:#321616; border:1px solid #a33; }
@@ -953,6 +963,13 @@ PAGE = r"""<!DOCTYPE html>
 </style>
 </head>
 <body>
+<div id="loading"><div class="box">
+  <div class="spin"></div>
+  <h2 id="ltitle">Reading your conversations…</h2>
+  <p id="lmsg">Desmond is reading every conversation straight from Messages on this Mac (read-only) so the list below is complete. On a big history this takes a minute or two.</p>
+  <p class="mut" id="lelapsed"></p>
+  <p class="mut" id="lretry" style="display:none"><button id="retry" style="background:var(--accent);color:#fff;border:0;border-radius:8px;padding:8px 14px;font-size:14px;cursor:pointer">Try again</button></p>
+</div></div>
 <div class="wrap">
   <h1>📲 Desmond</h1>
   <p class="sub">Pick people and a range, preview exactly what would leave Messages, trim it, then save.</p>
@@ -1113,14 +1130,34 @@ function renderChips() {
 }
 $("search").oninput = e => renderPeople(e.target.value);
 
-fetch("/api/people").then(r => r.json()).then(people => {
-  allPeople = people;
-  renderPeople("");
-  $("phint").textContent = people.length + " conversations found. Busiest first. Pick one or several.";
-}).catch(() => {
-  $("plist").innerHTML = '<div class="mut" style="padding:12px">Could not read Messages. '
-    + 'Give Terminal Full Disk Access, then restart it.</div>';
-});
+// ---- load the conversation list (gated: nothing is clickable until it's real) ----
+let loadTimer = null;
+function loadPeople() {
+  const t0 = Date.now();
+  $("loading").className = "";
+  $("ltitle").textContent = "Reading your conversations…";
+  $("lmsg").textContent = "Desmond is reading every conversation straight from Messages on this Mac (read-only) so the list below is complete. On a big history this takes a minute or two.";
+  $("lretry").style.display = "none";
+  clearInterval(loadTimer);
+  loadTimer = setInterval(() => { $("lelapsed").textContent = Math.round((Date.now() - t0) / 1000) + " seconds so far…"; }, 1000);
+  fetch("/api/people").then(r => { if (!r.ok) throw new Error("server said " + r.status); return r.json(); }).then(people => {
+    clearInterval(loadTimer);
+    allPeople = people;
+    renderPeople("");
+    $("phint").textContent = people.length + " conversations found. Busiest first. Pick one or several.";
+    $("loading").style.display = "none";
+  }).catch(err => {
+    clearInterval(loadTimer);
+    $("loading").className = "err";
+    $("ltitle").textContent = "Could not read Messages";
+    $("lmsg").textContent = "Give Terminal Full Disk Access (System Settings → Privacy & Security), quit Terminal with Cmd+Q, and double-click desmond_picker.command again. (" + err.message + ")";
+    $("lelapsed").textContent = "";
+    $("lretry").style.display = "block";
+    $("plist").innerHTML = '<div class="mut" style="padding:12px">Could not read Messages.</div>';
+  });
+}
+$("retry").onclick = loadPeople;
+loadPeople();
 
 // ---- ranges ----
 document.querySelectorAll("#ranges .opt, [data-r=custom]").forEach(el => el.onclick = () => {
