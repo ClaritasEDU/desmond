@@ -426,6 +426,31 @@ def main():
             picker.MESSAGES_DB, picker.PORT = saved_db, saved_port
             picker._conv_name_cache.clear()
 
+    # Save produces ONE PDF of the whole export (photos inline) when a headless
+    # browser is available, and says why not otherwise.
+    import stat as _stat
+    import desmond_pdf
+    with tempfile.TemporaryDirectory() as tmp:
+        fake = os.path.join(tmp, "fake-chrome")
+        with open(fake, "w") as f:
+            f.write("#!/bin/bash\nfor a in \"$@\"; do case \"$a\" in --print-to-pdf=*) printf '%%PDF-1.4 fake' > \"${a#--print-to-pdf=}\";; esac; done\n")
+        os.chmod(fake, os.stat(fake).st_mode | _stat.S_IEXEC)
+        folder = os.path.join(tmp, "Mom_all_x"); os.makedirs(folder)
+        with open(os.path.join(folder, "conversation.html"), "w") as f:
+            f.write("<html></html>")
+        orig = desmond_pdf.find_browser
+        try:
+            desmond_pdf.find_browser = lambda explicit=None: fake
+            pdf, err = picker.make_pdf(folder, "Mom", "all")
+            check(pdf == os.path.join(folder, "Mom_all.pdf") and os.path.exists(pdf) and err is None,
+                  "Save renders one PDF named after the person and range")
+            desmond_pdf.find_browser = lambda explicit=None: None
+            pdf, err = picker.make_pdf(folder, "Mom", "all")
+            check(pdf is None and "Save as PDF" in err, "no browser → clear fallback instruction, export still ok")
+        finally:
+            desmond_pdf.find_browser = orig
+    check('d.pdf_path' in picker.PAGE and "Your PDF" in picker.PAGE, "result panel leads with the PDF")
+
     # A full-page gate covers the controls until /api/people has answered.
     check('id="loading"' in picker.PAGE and "position:fixed; inset:0" in picker.PAGE,
           "page is gated by a full-screen loading overlay")
